@@ -1,0 +1,54 @@
+{
+  "_source": "Cirrus SR22 G3 NA, POH-typical planning values. Verify against your serial number.",
+  "type": "SR22",
+  "registration": "D-EXXX",
+
+  "units": {
+    "mass": "kg",
+    "fuel_volume": "L",
+    "distance": "NM",
+    "speed": "kt",
+    "arm": "in",
+    "moment": "kg_in"
+  },
+
+  "performance": {
+    "tas_cruise": 155,
+    "tas_climb": 110,
+    "tas_descent": 130,
+    "climb_rate_fpm": 1000,
+    "descent_rate_fpm": 500,
+    "fuel_burn_cruise_lph": 60.6,
+    "fuel_burn_climb_lph": 83.3,
+    "fuel_burn_taxi_lph": 15.1
+  },
+
+  "fuel": {
+    "capacity_usable_l": 348,
+    "density_kg_per_l": 0.72,
+    "reserve_minutes": 30,
+    "taxi_minutes": 12,
+    "approach_minutes": 10,
+    "alternate_minutes": 0
+  },
+
+  "mass_balance": {
+    "empty_mass_kg": 1031,
+    "mtow_kg": 1542,
+    "mlw_kg": 1542,
+    "_arm_units": "inches aft of datum (Cirrus convention)",
+    "stations": [
+      { "name": "Schmierstoff",        "arm": 78.6,   "default_mass_kg": 6.0 },
+      { "name": "Sitzreihe 1 (vorn)",  "arm": 143.5,  "default_mass_kg": 85 },
+      { "name": "Sitzreihe 2 (hinten)","arm": 180.0,  "default_mass_kg": 0 },
+      { "name": "Gepaeck vorn",        "arm": 95.0,   "default_mass_kg": 0 },
+      { "name": "Gepaeck hinten",      "arm": 208.0,  "default_mass_kg": 0 },
+      { "name": "Kraftstoff",          "arm": 153.75, "default_mass_kg": 180 }
+    ],
+    "cg_envelope": {
+      "_note": "Approximate SR22 G3 envelope, inches aft of datum. Replace with your POH values.",
+      "fwd_limit_in": 138.7,
+      "aft_limit_in": 148.1
+    }
+  }
+}
