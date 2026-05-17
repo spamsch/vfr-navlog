@@ -2,6 +2,8 @@
 
 A small Python script that turns a [Little Navmap](https://www.littlenavmap.org/) `.lnmpln` flight plan into a printable A4-landscape VFR navlog PDF, German LBA-style. Built for simulator use with X-Plane 12 and VATSIM, but the output is real-world readable.
 
+The `.lnmpln` format is Little Navmap's native flight-plan XML. You can build the plan in Little Navmap directly, or plan in **[Navigraph Charts](https://navigraph.com/products/charts)** and export to `.lnmpln` (File → Export → Little Navmap) — same file format either way, this script doesn't care which tool produced it.
+
 The PDF is three pages:
 
 1. **Navlog**: header, freigaben/wetter strip, frequency block, ATIS strip, leg-by-leg table with true course / magnetic heading / distance / groundspeed / ETE / fuel, fuel summary, planning assumptions.
