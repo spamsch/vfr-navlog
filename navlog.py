@@ -38,6 +38,17 @@ VATSIM_UA = "navlog.py/1.0 (+local VFR planning script)"
 # in the airspace you're operating in.
 UNICOM_FREQ = "122.800"
 
+# Default macOS Steam install. Override via --xplane.
+DEFAULT_XPLANE = Path.home() / "Library/Application Support/Steam/steamapps/common/X-Plane 12"
+NAV_REL = "Custom Data/earth_nav.dat"
+NAV_FALLBACK_REL = "Resources/default data/earth_nav.dat"
+APT_REL = "Global Scenery/Global Airports/Earth nav data/apt.dat"
+
+SURFACE_NAMES = {
+    "1": "Asphalt", "2": "Beton", "3": "Gras", "4": "Sand", "5": "Schotter",
+    "12": "Trocken", "13": "Wasser", "14": "Schnee/Eis", "15": "Transparent",
+}
+
 
 # ------------------------- fonts -------------------------
 
@@ -177,6 +188,7 @@ class VatsimSnapshot:
     fetched_at: str
     update_time: str
     frequencies: dict[str, dict[str, str]]  # icao -> {role -> "118.300"}
+    atis_text: dict[str, list[str]]         # icao -> raw ATIS lines
 
     def empty(self) -> bool:
         return not any(self.frequencies.values())
@@ -212,6 +224,7 @@ def fetch_vatsim(icaos: list[str], timeout: float = 6.0) -> VatsimSnapshot | Non
     }
 
     out: dict[str, dict[str, str]] = {icao.upper(): {} for icao in icaos if icao}
+    atis_out: dict[str, list[str]] = {icao.upper(): [] for icao in icaos if icao}
     for entry in controllers + atis_stations:
         callsign = (entry.get("callsign") or "").upper()
         if "_" not in callsign:
@@ -227,14 +240,183 @@ def fetch_vatsim(icaos: list[str], timeout: float = 6.0) -> VatsimSnapshot | Non
         freq = _normalize_freq(entry.get("frequency", ""))
         if not freq:
             continue
-        # First match wins for primary roles; for split sectors this picks any one.
         out[icao].setdefault(role, freq)
+        if role == "atis":
+            raw_atis = entry.get("text_atis") or []
+            if isinstance(raw_atis, list):
+                atis_out[icao] = [str(line).strip() for line in raw_atis if line]
+            elif isinstance(raw_atis, str):
+                atis_out[icao] = [raw_atis.strip()]
 
     return VatsimSnapshot(
         fetched_at=datetime.now(timezone.utc).strftime("%H:%MZ"),
         update_time=update_time,
         frequencies=out,
+        atis_text=atis_out,
     )
+
+
+# ------------------------- X-Plane nav data -------------------------
+
+@dataclass
+class Runway:
+    ident_a: str
+    ident_b: str
+    surface: str
+    width_m: float
+    length_m: float
+
+
+@dataclass
+class IlsLoc:
+    runway: str
+    ident: str
+    freq_mhz: float
+    type_desc: str
+
+
+@dataclass
+class AirportInfo:
+    icao: str
+    name: str
+    elevation_ft: float = 0.0
+    city: str = ""
+    transition_alt: str = ""
+    transition_level: str = ""
+    iata: str = ""
+    runways: list[Runway] = None  # type: ignore[assignment]
+    ils_locs: list[IlsLoc] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.runways is None:
+            self.runways = []
+        if self.ils_locs is None:
+            self.ils_locs = []
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return 2 * 6371000.0 * math.asin(math.sqrt(a))
+
+
+def parse_airport(apt_path: Path, icao: str) -> AirportInfo | None:
+    if not apt_path.exists():
+        return None
+    icao_upper = icao.upper()
+    info: AirportInfo | None = None
+    in_target = False
+    try:
+        with open(apt_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                parts = line.split()
+                if not parts:
+                    continue
+                row = parts[0]
+                if row == "1" and len(parts) >= 5:
+                    # New airport header. Finish previous if it was ours.
+                    if in_target:
+                        break
+                    if parts[4].upper() == icao_upper:
+                        info = AirportInfo(
+                            icao=icao_upper,
+                            name=" ".join(parts[5:]),
+                            elevation_ft=float(parts[1]),
+                        )
+                        in_target = True
+                    else:
+                        in_target = False
+                elif in_target and info is not None:
+                    if row == "1302" and len(parts) >= 3:
+                        key, val = parts[1], " ".join(parts[2:])
+                        if key == "city":
+                            info.city = val
+                        elif key == "transition_alt":
+                            info.transition_alt = val
+                        elif key == "transition_level":
+                            info.transition_level = val
+                        elif key == "iata_code":
+                            info.iata = val
+                    elif row == "100" and len(parts) >= 26:
+                        # 100 width surface ... end1_ident lat lon ... end2_ident lat lon ...
+                        try:
+                            width = float(parts[1])
+                            surface = parts[2]
+                            ident_a = parts[8]
+                            lat_a = float(parts[9])
+                            lon_a = float(parts[10])
+                            ident_b = parts[17]
+                            lat_b = float(parts[18])
+                            lon_b = float(parts[19])
+                            length_m = _haversine_m(lat_a, lon_a, lat_b, lon_b)
+                            info.runways.append(Runway(
+                                ident_a=ident_a, ident_b=ident_b,
+                                surface=SURFACE_NAMES.get(surface, surface),
+                                width_m=width, length_m=length_m,
+                            ))
+                        except (ValueError, IndexError):
+                            continue
+    except OSError:
+        return None
+    return info
+
+
+def parse_ils_locs(nav_path: Path, icao: str) -> list[IlsLoc]:
+    if not nav_path.exists():
+        return []
+    icao_upper = icao.upper()
+    out: list[IlsLoc] = []
+    try:
+        with open(nav_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if icao_upper not in line:
+                    continue
+                parts = line.split()
+                if len(parts) < 11:
+                    continue
+                if parts[0] not in {"4", "5"}:  # ILS LOC or LOC-only
+                    continue
+                if parts[8].upper() != icao_upper:
+                    continue
+                try:
+                    freq_raw = int(parts[4])
+                except ValueError:
+                    continue
+                runway = parts[10]
+                ident = parts[7]
+                type_desc = " ".join(parts[11:]) if len(parts) > 11 else ""
+                out.append(IlsLoc(
+                    runway=runway, ident=ident,
+                    freq_mhz=freq_raw / 100.0,
+                    type_desc=type_desc,
+                ))
+    except OSError:
+        return []
+    return out
+
+
+def load_destination_info(plan: Plan, xplane_path: Path) -> AirportInfo | None:
+    if not plan.waypoints:
+        return None
+    dest = plan.waypoints[-1]
+    if dest.type.upper() != "AIRPORT":
+        return None
+    apt_path = xplane_path / APT_REL
+    info = parse_airport(apt_path, dest.ident)
+    if info is None:
+        info = AirportInfo(icao=dest.ident.upper(), name=dest.name or dest.ident,
+                           elevation_ft=dest.alt_ft or 0.0)
+
+    nav_path = xplane_path / NAV_REL
+    if not nav_path.exists():
+        nav_path = xplane_path / NAV_FALLBACK_REL
+    info.ils_locs = parse_ils_locs(nav_path, info.icao)
+    return info
 
 
 # ------------------------- tower-call marker -------------------------
@@ -312,7 +494,7 @@ def fmt_int(x: float, width: int = 0) -> str:
     return f"{int(round(x)):>{width}d}"
 
 
-def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0) -> None:
+def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0, dest_info: AirportInfo | None = None) -> None:
     pdf = NavlogPDF()
     font = install_fonts(pdf)
     pw = pdf.w - pdf.l_margin - pdf.r_margin
@@ -674,6 +856,9 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
 
     render_phraseology(pdf, font, plan, aircraft, vatsim)
 
+    if dest_info is not None:
+        render_destination_page(pdf, font, dest_info, vatsim)
+
     pdf.output(str(out))
 
 
@@ -894,6 +1079,168 @@ def render_phraseology(pdf: FPDF, font: str, plan: Plan, aircraft: dict, vatsim:
                    align="C")
 
 
+# ------------------------- destination briefing page -------------------------
+
+def render_destination_page(pdf: FPDF, font: str, info: AirportInfo, vatsim: VatsimSnapshot | None) -> None:
+    pdf.add_page()
+    pw = pdf.w - pdf.l_margin - pdf.r_margin
+
+    # Title
+    pdf.set_xy(pdf.l_margin, pdf.t_margin)
+    pdf.set_font(font, "B", 14)
+    pdf.cell(pw, 8, f"Zielflugplatz {info.icao}  ·  Destination airport", align="C")
+    pdf.ln(9)
+    pdf.set_font(font, "I", 8)
+    pdf.cell(pw, 4, info.name + (f"  ·  {info.city}" if info.city else ""), align="C")
+    pdf.ln(7)
+
+    # ---------- Airport basics ----------
+    pdf.set_font(font, "B", 9)
+    pdf.set_fill_color(225, 225, 225)
+    pdf.cell(pw, 5, "  Flugplatz-Stammdaten  ·  Airport data", border=1, fill=True)
+    pdf.ln(5)
+
+    basics = [
+        ("ICAO",            info.icao),
+        ("IATA",            info.iata or "—"),
+        ("Name",            info.name),
+        ("Ort / City",      info.city or "—"),
+        ("Elevation",       f"{int(info.elevation_ft)} ft"),
+        ("TA / TL",         f"{info.transition_alt or '—'} ft / FL {info.transition_level or '—'}"),
+    ]
+    half = pw / 2
+    label_w = 32
+    val_w = half - label_w
+    pdf.set_font(font, "", 9)
+    for i in range(0, len(basics), 2):
+        row = basics[i:i + 2]
+        for label, value in row:
+            pdf.set_font(font, "B", 8)
+            pdf.cell(label_w, 5, " " + label, border=1)
+            pdf.set_font(font, "", 9)
+            pdf.cell(val_w, 5, " " + str(value), border=1)
+        if len(row) == 1:
+            pdf.cell(half, 5, "", border=0)
+        pdf.ln(5)
+    pdf.ln(2)
+
+    # ---------- Runways + ILS LOC ----------
+    pdf.set_font(font, "B", 9)
+    pdf.set_fill_color(210, 220, 235)
+    pdf.cell(pw, 5, "  Pisten & ILS-Frequenzen  ·  Runways & ILS LOC frequencies", border=1, fill=True)
+    pdf.ln(5)
+
+    cols = [
+        ("RWY",          22, "C"),
+        ("Belag",        24, "L"),
+        ("Länge",        22, "R"),
+        ("Breite",       18, "R"),
+        ("ILS Ident",    24, "C"),
+        ("ILS Freq",     24, "C"),
+        ("Typ",          pw - 22 - 24 - 22 - 18 - 24 - 24, "L"),
+    ]
+    pdf.set_font(font, "B", 8)
+    pdf.set_fill_color(240, 240, 240)
+    for name, w, _ in cols:
+        pdf.cell(w, 5, " " + name, border=1, fill=True)
+    pdf.ln(5)
+
+    # Build rows: one per runway end, joined with its ILS LOC if any.
+    ils_by_rwy = {ils.runway: ils for ils in info.ils_locs}
+    pdf.set_font(font, "", 9)
+    if info.runways:
+        for rwy in info.runways:
+            for end in (rwy.ident_a, rwy.ident_b):
+                ils = ils_by_rwy.get(end)
+                values = [
+                    end,
+                    rwy.surface,
+                    f"{int(round(rwy.length_m))} m",
+                    f"{int(round(rwy.width_m))} m",
+                    ils.ident if ils else "—",
+                    f"{ils.freq_mhz:.3f}" if ils else "—",
+                    ils.type_desc if ils else "—",
+                ]
+                for (_, w, align), val in zip(cols, values):
+                    pdf.cell(w, 5, " " + str(val), border=1, align=align)
+                pdf.ln(5)
+    else:
+        pdf.cell(pw, 5, "  Keine Pistendaten gefunden (X-Plane apt.dat fehlt). Pfad mit --xplane setzen.",
+                 border=1, align="C")
+        pdf.ln(5)
+    pdf.ln(2)
+
+    # ---------- Comm frequencies (recap + ATIS text) ----------
+    pdf.set_font(font, "B", 9)
+    pdf.set_fill_color(225, 225, 225)
+    suffix = f"  (VATSIM live, {vatsim.fetched_at})" if vatsim else ""
+    pdf.cell(pw, 5, "  Frequenzen & ATIS  ·  Communication frequencies" + suffix, border=1, fill=True)
+    pdf.ln(5)
+
+    freqs = vatsim.frequencies.get(info.icao, {}) if vatsim else {}
+    role_labels = [
+        ("Ground",    "ground"),
+        ("Tower",     "tower"),
+        ("Approach",  "approach"),
+        ("Delivery",  "delivery"),
+        ("ATIS",      "atis"),
+        ("UNICOM",    None),
+    ]
+    pdf.set_font(font, "", 9)
+    label_w2 = 30
+    val_w2 = pw / 3 - label_w2
+    pdf.set_x(pdf.l_margin)
+    col = 0
+    row_y = pdf.get_y()
+    for label, key in role_labels:
+        if key is None:
+            value = f"{UNICOM_FREQ} (kein ATC)"
+        else:
+            value = freqs.get(key, "—") or "—"
+        x = pdf.l_margin + col * (label_w2 + val_w2)
+        pdf.set_xy(x, row_y)
+        pdf.set_font(font, "B", 8)
+        pdf.cell(label_w2, 5, " " + label, border=1)
+        pdf.set_font(font, "", 9)
+        pdf.cell(val_w2, 5, " " + value, border=1)
+        col += 1
+        if col == 3:
+            col = 0
+            row_y += 5
+    if col != 0:
+        # fill remaining slots in current row
+        for _ in range(3 - col):
+            x = pdf.l_margin + col * (label_w2 + val_w2)
+            pdf.set_xy(x, row_y)
+            pdf.cell(label_w2 + val_w2, 5, "", border=0)
+            col += 1
+        row_y += 5
+    pdf.set_y(row_y + 1)
+
+    # Live ATIS text, if present
+    atis_lines = vatsim.atis_text.get(info.icao) if vatsim else None
+    if atis_lines:
+        pdf.set_font(font, "B", 8)
+        pdf.set_fill_color(245, 245, 220)
+        pdf.cell(pw, 4.5, "  ATIS-Text (live)", border=1, fill=True)
+        pdf.ln(4.5)
+        pdf.set_font(font, "", 8.5)
+        atis_block = "\n".join(atis_lines)
+        pdf.multi_cell(pw, 4, atis_block, border="LBR")
+    else:
+        pdf.set_font(font, "I", 8)
+        pdf.cell(pw, 4.5, "  Kein ATIS-Text verfügbar (VATSIM ATIS offline oder --vatsim nicht gesetzt).",
+                 border=1, align="C")
+        pdf.ln(4.5)
+
+    # Footer
+    pdf.set_y(pdf.h - pdf.b_margin - 4)
+    pdf.set_font(font, "I", 6)
+    pdf.cell(0, 3,
+             "Pisten- und ILS-Daten aus X-Plane apt.dat / earth_nav.dat. Vor dem Flug aktuelle AIP / ATIS prüfen.",
+             align="C")
+
+
 # ------------------------- CLI -------------------------
 
 def main():
@@ -907,6 +1254,9 @@ def main():
                     help="Fetch live ATC frequencies from VATSIM for departure and destination.")
     ap.add_argument("--call-tower-nm", type=float, default=10.0,
                     help="Remaining-distance threshold (NM) for the tower-call marker. 0 disables.")
+    ap.add_argument("--xplane", type=Path, default=DEFAULT_XPLANE,
+                    help="Path to X-Plane 12 root (for apt.dat / earth_nav.dat). "
+                         "Set to '' to skip the destination-briefing page.")
     args = ap.parse_args()
 
     plan = parse_lnmpln(args.plan)
@@ -929,7 +1279,14 @@ def main():
     tas = aircraft["performance"]["tas_cruise"]
     burn = aircraft["performance"]["fuel_burn_cruise_lph"]
     legs = compute_legs(plan, tas, wind, magvar, burn)
-    render(plan, aircraft, legs, wind, magvar, args.output, vatsim=snapshot, call_tower_nm=args.call_tower_nm)
+
+    dest_info: AirportInfo | None = None
+    if args.xplane and str(args.xplane).strip():
+        dest_info = load_destination_info(plan, args.xplane)
+
+    render(plan, aircraft, legs, wind, magvar, args.output,
+           vatsim=snapshot, call_tower_nm=args.call_tower_nm,
+           dest_info=dest_info)
     print(f"Wrote {args.output}")
     total_d = sum(l.distance_nm for l in legs)
     total_t = sum(l.ete_min for l in legs)

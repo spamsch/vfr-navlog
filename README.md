@@ -2,10 +2,11 @@
 
 A small Python script that turns a [Little Navmap](https://www.littlenavmap.org/) `.lnmpln` flight plan into a printable A4-landscape VFR navlog PDF, German LBA-style. Built for simulator use with X-Plane 12 and VATSIM, but the output is real-world readable.
 
-The PDF is two pages:
+The PDF is three pages:
 
 1. **Navlog**: header, freigaben/wetter strip, frequency block, ATIS strip, leg-by-leg table with true course / magnetic heading / distance / groundspeed / ETE / fuel, fuel summary, planning assumptions.
 2. **Phraseology**: bilingual (German / English) VFR radio calls templated to your flight — UNICOM departure, Bremen Information FIS contact, destination tower inbound, reporting points, landing readback, Mayday — plus a "what you'll hear from the destination tower" reference table.
+3. **Destination briefing**: airport stammdaten, runway table with ILS LOC frequencies pulled from X-Plane's `earth_nav.dat`, communication frequencies recap, and the live VATSIM ATIS text if a controller is broadcasting.
 
 It also fetches **live VATSIM controller frequencies** for the departure and destination airports, and marks the leg where you should call the destination tower based on a configurable distance threshold.
 
@@ -56,6 +57,7 @@ Opens at `navlog.pdf`. Two pages.
 | `--output` | `navlog.pdf` | Output file. |
 | `--vatsim` | off | Fetch live ATC frequencies from VATSIM. One HTTPS request, fails soft. |
 | `--call-tower-nm` | `10` | Distance threshold (NM remaining) at which to flag the tower-call leg. `0` disables. |
+| `--xplane` | macOS Steam default | Path to X-Plane 12 root. Used to read `apt.dat` (runway lengths/surface) and `earth_nav.dat` (ILS LOC frequencies) for the destination briefing page. Pass `--xplane ""` to skip the page. |
 
 ## Aircraft profile
 
@@ -86,6 +88,17 @@ Notes on the German VFR phraseology I checked against:
 - **POB** ("Personen an Bord") goes into the FIS position report, not the tower call. The destination tower will ask separately if it wants it — the "What you may hear from the Tower" table includes that case.
 - **Landing readback** is just runway designator + callsign per ICAO Annex 10. Wind is informational and not required in the readback.
 - **Reporting points** ("Pflichtmeldepunkte") are airport-specific — substitute the actual point name (Whiskey, Sierra etc.) when you fly.
+
+## Destination briefing page
+
+Page 3 reads from X-Plane's local nav data — no internet, no scraping. The script looks at:
+
+- `apt.dat` from `Global Scenery/Global Airports/Earth nav data/` (bundled with X-Plane 12) — airport elevation, transition altitude/level, IATA code, runway endpoints/width/surface. Runway length is great-circle distance between the two endpoints.
+- `earth_nav.dat` from `Custom Data/` (Navigraph) or, if absent, `Resources/default data/` (Laminar) — ILS LOC entries (type 4 / 5) joined to runways. CAT-I / CAT-III / LOC-only are passed through verbatim.
+
+The "Frequenzen & ATIS" block then layers VATSIM data on top: live frequencies for the controllers on duty + the verbatim **ATIS text** from the controller's broadcast. The ATIS text is genuinely useful — it tells you the runway in use, current QNH, ATIS letter, and any approach restrictions before you've even tuned the frequency.
+
+If `--xplane` points somewhere without the expected files, the page degrades to whatever it can find: comm frequencies and ATIS text still appear, runway/ILS sections show a "data not found" line.
 
 ## VATSIM data
 
