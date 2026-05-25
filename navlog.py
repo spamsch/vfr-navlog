@@ -20,6 +20,7 @@ import argparse
 import json
 import math
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -32,6 +33,7 @@ from fpdf import FPDF
 
 
 VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
+VATSIM_METAR_URL = "https://metar.vatsim.net/metar.php?id={icao}"
 VATSIM_UA = "navlog.py/1.0 (+local VFR planning script)"
 
 # VATSIM convention: tune 122.800 ("UNICOM") whenever no ATC station is online
@@ -42,7 +44,10 @@ UNICOM_FREQ = "122.800"
 DEFAULT_XPLANE = Path.home() / "Library/Application Support/Steam/steamapps/common/X-Plane 12"
 NAV_REL = "Custom Data/earth_nav.dat"
 NAV_FALLBACK_REL = "Resources/default data/earth_nav.dat"
+FIX_REL = "Resources/default data/earth_fix.dat"
 APT_REL = "Global Scenery/Global Airports/Earth nav data/apt.dat"
+
+NAVIGRAPH_LDB = Path.home() / "Library/Application Support/Navigraph Charts/Local Storage/leveldb"
 
 SURFACE_NAMES = {
     "1": "Asphalt", "2": "Beton", "3": "Gras", "4": "Sand", "5": "Schotter",
@@ -115,6 +120,7 @@ class Waypoint:
     lon: float
     alt_ft: float | None = None
     region: str | None = None
+    freq: str | None = None
 
 
 @dataclass
@@ -494,7 +500,7 @@ def fmt_int(x: float, width: int = 0) -> str:
     return f"{int(round(x)):>{width}d}"
 
 
-def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0, dest_info: AirportInfo | None = None) -> None:
+def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0, dest_info: AirportInfo | None = None, source_note: str = "") -> None:
     pdf = NavlogPDF()
     font = install_fonts(pdf)
     pw = pdf.w - pdf.l_margin - pdf.r_margin
@@ -703,7 +709,7 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
             wp = plan.waypoints[0]
             row = [
                 f"{wp.ident}  {wp.name}",
-                "",
+                wp.freq or "",
                 fmt_int(wp.alt_ft or 0) if wp.alt_ft else "",
                 "", "", "", "", "", "",
                 "", "", "", "", "", "", "",
@@ -717,7 +723,7 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
             first_leg = (i == 1)
             row = [
                 f"{wp.ident}  {wp.name}",
-                "",
+                wp.freq or "",
                 fmt_int(plan.cruise_alt_ft) if i < len(plan.waypoints) - 1 else fmt_int(wp.alt_ft or 0),
                 fmt_int(perf.get("tas_cruise", 0)) if first_leg else "",
                 f"{int(wind[0]):03d}/{int(wind[1]):02d}" if first_leg else "",
@@ -850,9 +856,8 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
     # bottom note
     pdf.set_xy(pdf.l_margin, pdf.h - pdf.b_margin - 4)
     pdf.set_font(font, "I", 6)
-    pdf.cell(0, 3,
-             "Erzeugt aus Little Navmap .lnmpln — Werte ohne Gewähr. Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen.",
-             align="C")
+    note = source_note or "Erzeugt aus Little Navmap .lnmpln — Werte ohne Gewähr. Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
+    pdf.cell(0, 3, note, align="C")
 
     render_phraseology(pdf, font, plan, aircraft, vatsim)
 
@@ -865,218 +870,346 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
 # ------------------------- phraseology page -------------------------
 
 def render_phraseology(pdf: FPDF, font: str, plan: Plan, aircraft: dict, vatsim: VatsimSnapshot | None) -> None:
-    """A bilingual VFR phraseology cheat-sheet templated to this flight."""
-    pdf.add_page()
-    pw = pdf.w - pdf.l_margin - pdf.r_margin
-
+    """Two-page phraseology: (1) FIS Bremen Information, (2) CTR entry via Whiskey."""
     dep = plan.waypoints[0]
     dest = plan.waypoints[-1]
     reg = aircraft.get("registration", "D-XXXX")
-    ac_type = aircraft.get("type", "Cirrus")
+    ac_type = aircraft.get("type", "C172")
 
     def clean_name(s: str) -> str:
-        # lnmpln files sometimes have "Muenster- Osnabrueck" (space after hyphen).
         return s.replace("- ", "-").strip(" -")
 
-    dep_name = clean_name(dep.name or dep.ident).split()[0] or dep.ident
     dest_name = clean_name(dest.name or dest.ident).split()[0] or dest.ident
 
     tower_freq = ""
     if vatsim:
         tower_freq = vatsim.frequencies.get(dest.ident.upper(), {}).get("tower", "")
+    tower_on = f" auf {tower_freq}" if tower_freq else ""
 
-    # FIS sector for north Germany. Pilot edits when flying elsewhere.
-    fis_station_de = "Bremen Information"
-    fis_station_en = "Bremen Information"
+    # ── layout constants (computed once, used in all helpers via closure) ─────
+    pw     = pdf.w - pdf.l_margin - pdf.r_margin
+    ROLE_W = 14.0
+    DE_W   = (pw - ROLE_W) / 2
+    EN_W   = pw - ROLE_W - DE_W
+    LH     = 4.0          # line height for dialogue rows
 
-    # Title
+    SIT_W  = 52.0
+    DE_V   = (pw - SIT_W) / 2
+    EN_V   = pw - SIT_W - DE_V
+
+    # colour palette
+    C_PILOT = (235, 245, 255)   # pilot rows: pale blue
+    C_ATC   = (255, 248, 230)   # ATC rows:   pale amber
+    C_NOTE  = (252, 252, 220)   # info notes: pale yellow
+    C_SEC   = (225, 225, 225)   # section headers
+    C_HDR   = (210, 220, 235)   # variation table header
+    C_COL   = (242, 242, 242)   # column label row
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def note_box(text: str) -> None:
+        pdf.set_font(font, "I", 7.5)
+        pdf.set_fill_color(*C_NOTE)
+        pdf.multi_cell(pw, 3.8, text, border=1, fill=True)
+        pdf.ln(3)
+
+    def section_bar(title: str, with_cols: bool = True) -> None:
+        pdf.set_font(font, "B", 9)
+        pdf.set_fill_color(*C_SEC)
+        pdf.cell(pw, 5, "  " + title, border=1, fill=True)
+        pdf.ln(5)
+        if with_cols:
+            pdf.set_fill_color(*C_COL)
+            pdf.set_font(font, "B", 7.5)
+            pdf.cell(ROLE_W, 4.5, "",           border=1, fill=True)
+            pdf.cell(DE_W,   4.5, "  Deutsch",  border=1, fill=True)
+            pdf.cell(EN_W,   4.5, "  English",  border=1, fill=True)
+            pdf.ln(4.5)
+
+    def drow(role: str, de: str, en: str, atc: bool = False) -> None:
+        """One dialogue row: role chip | German text | English text."""
+        bg = C_ATC if atc else C_PILOT
+        y0 = pdf.get_y()
+        pdf.set_fill_color(*bg)
+
+        pdf.set_xy(pdf.l_margin, y0)
+        pdf.set_font(font, "B", 7.5)
+        pdf.multi_cell(ROLE_W, LH, role, border="LBR", align="C", fill=True)
+        h0 = pdf.get_y() - y0
+
+        pdf.set_xy(pdf.l_margin + ROLE_W, y0)
+        pdf.set_font(font, "", 8.5)
+        pdf.multi_cell(DE_W, LH, de, border="BR", fill=True)
+        h1 = pdf.get_y() - y0
+
+        pdf.set_xy(pdf.l_margin + ROLE_W + DE_W, y0)
+        pdf.set_font(font, "I", 8.5)
+        pdf.multi_cell(EN_W, LH, en, border="BR", fill=True)
+        h2 = pdf.get_y() - y0
+
+        pdf.set_y(y0 + max(h0, h1, h2))
+
+    def vbar(title: str) -> None:
+        pdf.ln(2)
+        pdf.set_font(font, "B", 8.5)
+        pdf.set_fill_color(*C_HDR)
+        pdf.cell(pw, 5, "  " + title, border=1, fill=True)
+        pdf.ln(5)
+        pdf.set_fill_color(*C_COL)
+        pdf.set_font(font, "B", 7.5)
+        pdf.cell(SIT_W, 4, "  Situation", border=1, fill=True)
+        pdf.cell(DE_V,  4, "  Deutsch",   border=1, fill=True)
+        pdf.cell(EN_V,  4, "  English",   border=1, fill=True)
+        pdf.ln(4)
+
+    def vrow(sit: str, de: str, en: str) -> None:
+        y0 = pdf.get_y()
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_xy(pdf.l_margin, y0)
+        pdf.set_font(font, "B", 7.5)
+        pdf.multi_cell(SIT_W, LH, sit, border="LBR")
+        h0 = pdf.get_y() - y0
+        pdf.set_xy(pdf.l_margin + SIT_W, y0)
+        pdf.set_font(font, "", 8)
+        pdf.multi_cell(DE_V, LH, de, border="BR")
+        h1 = pdf.get_y() - y0
+        pdf.set_xy(pdf.l_margin + SIT_W + DE_V, y0)
+        pdf.set_font(font, "I", 8)
+        pdf.multi_cell(EN_V, LH, en, border="BR")
+        h2 = pdf.get_y() - y0
+        pdf.set_y(y0 + max(h0, h1, h2))
+
+    def page_footer(text: str) -> None:
+        pdf.set_y(pdf.h - pdf.b_margin - 4)
+        pdf.set_font(font, "I", 6)
+        pdf.cell(0, 3, text, align="C")
+
+    # ── PAGE 1: FIS Bremen Information ────────────────────────────────────────
+    pdf.add_page()
+
     pdf.set_xy(pdf.l_margin, pdf.t_margin)
-    pdf.set_font(font, "B", 14)
-    pdf.cell(pw, 8, "Sprechgruppen VFR  ·  VFR Radio Phraseology", align="C")
-    pdf.ln(9)
-
+    pdf.set_font(font, "B", 13)
+    pdf.cell(pw, 7, "Sprechgruppen VFR  ·  1: FIS Bremen Information", align="C")
+    pdf.ln(8)
     pdf.set_font(font, "I", 8)
     pdf.cell(pw, 4,
-             f"Templated für {reg} ({ac_type}), {dep.ident} → {dest.ident}. "
-             f"Platzhalter [in eckigen Klammern] vor jedem Funkspruch anpassen.",
+             f"Templated für {reg} ({ac_type}), {dep.ident} → {dest.ident}.  "
+             "[Eckige Klammern] vor jedem Spruch anpassen.",
              align="C")
-    pdf.ln(7)
-
-    tower_suffix = f" auf {tower_freq}" if tower_freq else ""
-    tower_suffix_en = f" on {tower_freq}" if tower_freq else ""
-    info_letter = "[Information X]"
-    info_letter_en = "[information X]"
-
-    sections = [
-        (
-            "1. Abflug auf UNICOM (kein ATC)  ·  Departure call on UNICOM",
-            f"Verkehr {dep_name}, {reg}, {ac_type}, rollt zur Piste [25] zum Start, "
-            f"VFR nach {dest_name}, Flughöhe [2500 Fuß].",
-            f"{dep_name} traffic, {reg}, {ac_type}, taxiing to runway [25] for departure, "
-            f"VFR to {dest_name}, cruising [2500 feet].",
-        ),
-        (
-            "2. Erstanruf FIS  ·  FIS initial call",
-            f"{fis_station_de}, {reg}.",
-            f"{fis_station_en}, {reg}.",
-        ),
-        (
-            "3. Positionsmeldung an FIS  ·  Position report to FIS  (POB hier abgeben!)",
-            f"{reg}, {ac_type}, [5 NM östlich Osnabrück], [2500 Fuß], "
-            f"VFR von {dep.ident} nach {dest.ident}, [1] Person an Bord, "
-            f"Flugverfolgung erbeten.",
-            f"{reg}, {ac_type}, [5 NM east of Osnabrück], [2500 feet], "
-            f"VFR from {dep.ident} to {dest.ident}, [1] POB, "
-            f"request flight following.",
-        ),
-        (
-            "4. Frequenzwechsel verlassen FIS  ·  Leaving FIS frequency",
-            f"{reg} verlässt Ihre Frequenz, wechselt auf {dest.ident} Turm{tower_suffix}, "
-            "vielen Dank, auf Wiederhören.",
-            f"{reg} leaving your frequency, switching to {dest.ident} Tower{tower_suffix_en}, "
-            "thank you, good day.",
-        ),
-        (
-            "5. Erstanruf Zielturm  ·  Destination tower initial call",
-            f"{dest_name} Turm, {reg}.",
-            f"{dest_name} Tower, {reg}.",
-        ),
-        (
-            "6. Anflug-Positionsmeldung  ·  Inbound position report",
-            f"{reg}, {ac_type}, [10 NM östlich], [2500 Fuß], {info_letter} erhalten, "
-            f"VFR-Landung {dest_name}.",
-            f"{reg}, {ac_type}, [10 NM east], [2500 feet], {info_letter_en} received, "
-            f"VFR landing {dest_name}.",
-        ),
-        (
-            "7. Am Pflichtmeldepunkt  ·  Compulsory reporting point",
-            f"{reg}, am Punkt [Whiskey / VP227], [2500 Fuß].",
-            f"{reg}, point [Whiskey / VP227], [2500 feet].",
-        ),
-        (
-            "8. Landefreigabe-Rücklesung  ·  Landing clearance readback",
-            f"Landung Piste [25], {reg}.",
-            f"Cleared to land runway [25], {reg}.",
-        ),
-        (
-            "9. Piste verlassen / Bodenkontrolle  ·  Vacated / ground call",
-            f"{reg} Piste [25] verlassen, frage Rollanweisung zum [GA-Vorfeld].",
-            f"{reg} runway [25] vacated, request taxi to [GA apron].",
-        ),
-        (
-            "10. Notruf  ·  Distress call (MAYDAY)",
-            f"Mayday, Mayday, Mayday — [Station], {reg}, {ac_type}, "
-            f"[Position], [Problem: z. B. Triebwerksausfall], [Absicht], "
-            f"[Personen an Bord], [Treibstoff in min].",
-            f"Mayday, Mayday, Mayday — [station], {reg}, {ac_type}, "
-            f"[position], [problem: e.g. engine failure], [intentions], "
-            f"[souls on board], [fuel remaining].",
-        ),
-    ]
-
-    de_w = pw / 2
-    en_w = pw - de_w
-    line_h = 3.6
-
-    for title, de_text, en_text in sections:
-        # section header bar
-        pdf.set_font(font, "B", 9)
-        pdf.set_fill_color(225, 225, 225)
-        pdf.cell(pw, 5, " " + title, border=1, fill=True)
-        pdf.ln(5)
-
-        start_y = pdf.get_y()
-        # German cell
-        pdf.set_xy(pdf.l_margin, start_y)
-        pdf.set_font(font, "", 9)
-        pdf.multi_cell(de_w, line_h + 0.6, de_text, border="LBR")
-        de_end = pdf.get_y()
-
-        # English cell
-        pdf.set_xy(pdf.l_margin + de_w, start_y)
-        pdf.set_font(font, "I", 9)
-        pdf.multi_cell(en_w, line_h + 0.6, en_text, border="LBR")
-        en_end = pdf.get_y()
-
-        pdf.set_y(max(de_end, en_end) + 1.2)
-
-    # ---------- destination controller responses ----------
-    pdf.ln(2)
-    pdf.set_font(font, "B", 10)
-    pdf.set_fill_color(210, 220, 235)
-    pdf.cell(pw, 6, f"  Was Sie vom {dest.ident} Turm hören können  ·  What you may hear from {dest.ident} Tower",
-             border=1, fill=True)
     pdf.ln(6)
 
-    controller_rows = [
-        (
-            "Personen an Bord  ·  POB query",
-            f"{reg}, Personen an Bord?",
-            f"{reg}, persons on board?",
-        ),
-        (
-            "Einflug CTR freigegeben  ·  CTR entry clearance",
-            f"{reg}, Einflug genehmigt über [Whiskey], QNH [1018], Information [Bravo] aktuell.",
-            f"{reg}, cleared to enter via [Whiskey], QNH [1018], information [Bravo] current.",
-        ),
-        (
-            "Meldepunkt verlangt  ·  Report point",
-            f"{reg}, melden Sie [Pflichtmeldepunkt Whiskey], [2500 Fuß].",
-            f"{reg}, report [compulsory point Whiskey], [2500 feet].",
-        ),
-        (
-            "Landefreigabe  ·  Landing clearance",
-            f"{reg}, Landung Piste [25], Wind [240 Grad 12 Knoten].",
-            f"{reg}, cleared to land runway [25], wind [240 degrees 12 knots].",
-        ),
-        (
-            "Durchstart  ·  Go-around",
-            f"{reg}, durchstarten, Steigflug [3000 Fuß], links nach [Norden].",
-            f"{reg}, go around, climb [3000 feet], left turn [northbound].",
-        ),
-        (
-            "Rollanweisung nach Landung  ·  Taxi after landing",
-            f"{reg}, rollen Sie über [Bravo] zum [GA-Vorfeld], Bodenkontrolle nicht erforderlich.",
-            f"{reg}, taxi via [Bravo] to [GA apron], ground contact not required.",
-        ),
-    ]
+    note_box(
+        "Bremen Information (Langen Center) = Fluginformationsdienst, keine Staffelung. "
+        "Erstanruf: nur Rufzeichen — erst nach Rückfrage die Vollmeldung abgeben. "
+        "POB immer nennen. Squawk VFR = 7000. Frequenz: AIP / Streckenkarte prüfen."
+    )
 
-    sit_w = 56
-    de_resp_w = (pw - sit_w) / 2
-    en_resp_w = pw - sit_w - de_resp_w
-    pdf.set_fill_color(240, 240, 240)
-    pdf.set_font(font, "B", 7.5)
-    pdf.cell(sit_w, 4, " Situation", border=1, fill=True)
-    pdf.cell(de_resp_w, 4, " Deutsch", border=1, fill=True)
-    pdf.cell(en_resp_w, 4, " English", border=1, fill=True)
-    pdf.ln(4)
-    pdf.set_fill_color(255, 255, 255)
-    for sit, de_msg, en_msg in controller_rows:
-        start_y = pdf.get_y()
-        pdf.set_xy(pdf.l_margin, start_y)
-        pdf.set_font(font, "B", 8)
-        pdf.multi_cell(sit_w, 4, sit, border="LBR")
-        h_sit = pdf.get_y() - start_y
-        pdf.set_xy(pdf.l_margin + sit_w, start_y)
-        pdf.set_font(font, "", 8)
-        pdf.multi_cell(de_resp_w, 4, de_msg, border="BR")
-        h_de = pdf.get_y() - start_y
-        pdf.set_xy(pdf.l_margin + sit_w + de_resp_w, start_y)
-        pdf.set_font(font, "I", 8)
-        pdf.multi_cell(en_resp_w, 4, en_msg, border="BR")
-        h_en = pdf.get_y() - start_y
-        pdf.set_y(start_y + max(h_sit, h_de, h_en))
+    section_bar("A · Erstkontakt & Vollmeldung  ·  Initial contact & full position report")
 
-    # footer reminder
-    pdf.ln(2)
-    pdf.set_font(font, "I", 7)
-    pdf.multi_cell(pw, 3,
-                   "Hinweis: FIS-Sektor und -Frequenz richten sich nach dem Fluggebiet "
-                   "(Bremen / Langen / München Information). POB wird in der Regel beim FIS-Erstkontakt "
-                   "angegeben; der Tower fragt ggf. separat nach. Pflichtmeldepunkte, Pistennummer "
-                   "und ATIS-Buchstabe vor dem Anflug aktualisieren. Bei VATSIM ohne ATC: "
-                   f"Position blind auf UNICOM {UNICOM_FREQ} MHz absetzen.",
-                   align="C")
+    drow("PILOT",
+         f"Bremen Information, {reg}.",
+         f"Bremen Information, {reg}.")
+
+    drow("FIS",
+         f"{reg}, Bremen Information, bitte melden.",
+         f"{reg}, Bremen Information, go ahead.",
+         atc=True)
+
+    drow("PILOT",
+         f"{reg}, {ac_type}, VFR von {dep.ident} nach {dest.ident}, "
+         f"[Position, z. B. 10 km nördlich Osnabrück], [2500 Fuß], "
+         "[2] Personen an Bord, erbitte Verkehrsinformationen.",
+         f"{reg}, {ac_type}, VFR from {dep.ident} to {dest.ident}, "
+         f"[position, e.g. 10 km north of Osnabrück], [2500 feet], "
+         "[2] persons on board, request traffic information.")
+
+    drow("FIS",
+         f"{reg}, identifiziert, [2500 Fuß], QNH [1018], Squawk [7631], "
+         "Verkehrsinformationen soweit möglich.",
+         f"{reg}, identified, [2500 feet], QNH [1018], squawk [7631], "
+         "traffic information workload permitting.",
+         atc=True)
+
+    drow("PILOT",
+         f"QNH [1018], Squawk [7631], {reg}.",
+         f"QNH [1018], squawk [7631], {reg}.")
+
+    section_bar("B · Verkehrsinformation & Frequenzverlassen  ·  Traffic info & leaving FIS",
+                with_cols=False)
+
+    drow("FIS",
+         f"{reg}, Verkehr, [Cessna 172, 12 Uhr, 4 Meilen], entgegenkommend, [2500 Fuß], "
+         "melden Sie Verkehr in Sicht.",
+         f"{reg}, traffic, [Cessna 172, 12 o'clock, 4 miles], opposite direction, [2500 feet], "
+         "report traffic in sight.",
+         atc=True)
+
+    drow("PILOT",
+         f"Verkehr in Sicht / nicht in Sicht, {reg}.",
+         f"Traffic in sight / not in sight, {reg}.")
+
+    drow("PILOT",
+         f"{reg}, erbitte Verlassen der Frequenz.",
+         f"{reg}, request frequency change.")
+
+    drow("FIS",
+         f"{reg}, Frequenzwechsel genehmigt, Squawk VFR, auf Wiederhören.",
+         f"{reg}, frequency change approved, squawk 7000, goodbye.",
+         atc=True)
+
+    drow("PILOT",
+         f"Squawk VFR, {reg}, auf Wiederhören.",
+         f"Squawk 7000, {reg}, goodbye.")
+
+    vbar("Mögliche FIS-Antworten  ·  Possible FIS responses")
+
+    vrow("Hohe Arbeitsbelastung\nWorkload denial",
+         f"{reg}, aufgrund hoher Arbeitsbelastung kein Fluginformationsdienst möglich. "
+         f"Squawk 7000, auf Wiederhören.\n→  Verstanden, Squawk 7000, {reg}.",
+         f"{reg}, unable to provide FIS due to high workload. "
+         f"Squawk 7000, goodbye.\n→  Roger, squawk 7000, {reg}.")
+
+    vrow("Kein Radarkontakt\nNo radar contact",
+         f"{reg}, kein Radarkontakt. Bitte Position genauer angeben.\n"
+         f"→  {reg}, [5 km westlich Mast Steinkimmen], Kurs [120 Grad].",
+         f"{reg}, no radar contact. Say position more precisely.\n"
+         f"→  {reg}, [5 km west of Steinkimmen mast], heading [120].")
+
+    vrow("POB-Nachfrage\nPOB query",
+         f"{reg}, wie viele Personen an Bord?\n→  [2] Personen an Bord, {reg}.",
+         f"{reg}, persons on board?\n→  [2] persons on board, {reg}.")
+
+    page_footer(
+        "FIS = Fluginformationsdienst — keine Staffelung, keine Separierung. "
+        "Frequenzwechsel erst nach Genehmigung. Squawk 7000 beim Verlassen. "
+        "Quelle: DFS Sprechfunkverfahren / VATSIM Germany KB."
+    )
+
+    # ── PAGE 2: CTR entry via Whiskey ─────────────────────────────────────────
+    pdf.add_page()
+
+    pdf.set_xy(pdf.l_margin, pdf.t_margin)
+    pdf.set_font(font, "B", 13)
+    pdf.cell(pw, 7,
+             f"Sprechgruppen VFR  ·  2: CTR-Einflug {dest.ident} über Meldepunkt Whiskey",
+             align="C")
+    pdf.ln(8)
+    pdf.set_font(font, "I", 8)
+    pdf.cell(pw, 4,
+             f"{reg} ({ac_type}), {dep.ident} → {dest.ident}, "
+             f"Einflug über Whiskey, Piste [25]{tower_on}.  [Eckige Klammern] anpassen.",
+             align="C")
+    pdf.ln(6)
+
+    note_box(
+        "Vorher: ATIS abhören, Buchstaben und QNH notieren, max. Einflughöhe beachten (oft 2000 ft). "
+        "Erstanruf ca. 10–15 NM vor der CTR-Grenze: nur Rufzeichen — dann warten! "
+        "Vollmeldung mit ATIS-Buchstabe erst nach Rückfrage."
+    )
+
+    section_bar("C · Erstkontakt Tower & Einflugfreigabe  ·  Initial call & CTR entry clearance")
+
+    drow("PILOT",
+         f"{dest_name} Tower, {reg}.",
+         f"{dest_name} Tower, {reg}.")
+
+    drow("TWR",
+         f"{reg}, {dest_name} Tower, bitte melden.",
+         f"{reg}, {dest_name} Tower, go ahead.",
+         atc=True)
+
+    drow("PILOT",
+         f"{reg}, {ac_type}, VFR von {dep.ident}, [15 km nordwestlich Whiskey], [2000 Fuß], "
+         "Information [Alpha] erhalten, erbitte Einflug über Whiskey zur Landung.",
+         f"{reg}, {ac_type}, VFR from {dep.ident}, [15 km northwest of Whiskey], [2000 feet], "
+         "information [Alpha] received, request entry via Whiskey for landing.")
+
+    drow("TWR",
+         f"{reg}, fliegen Sie in die Kontrollzone über Whiskey, "
+         "QNH [1018], erwarten Sie Piste [25].",
+         f"{reg}, enter the control zone via Whiskey, "
+         "QNH [1018], expect runway [25].",
+         atc=True)
+
+    drow("PILOT",
+         f"Einflug über Whiskey, QNH [1018], Piste [25], {reg}.",
+         f"Entering via Whiskey, QNH [1018], runway [25], {reg}.")
+
+    drow("TWR",
+         f"{reg}, melden Sie Whiskey.",
+         f"{reg}, report Whiskey.",
+         atc=True)
+
+    drow("PILOT",
+         f"Melde Whiskey, {reg}.",
+         f"Wilco, {reg}.")
+
+    section_bar("D · Am Meldepunkt Whiskey bis GA-Vorfeld  ·  At Whiskey through to GA apron",
+                with_cols=False)
+
+    drow("PILOT",
+         f"{reg}, Whiskey, [2000 Fuß].",
+         f"{reg}, Whiskey, [2000 feet].")
+
+    drow("TWR",
+         f"{reg}, fliegen Sie in den [rechten] Gegenanflug Piste [25].",
+         f"{reg}, join [right] downwind runway [25].",
+         atc=True)
+
+    drow("PILOT",
+         f"[Rechter] Gegenanflug Piste [25], {reg}.",
+         f"[Right] downwind runway [25], {reg}.")
+
+    drow("TWR",
+         f"{reg}, Wind [250 Grad, 8 Knoten], Piste [25], Landung frei.",
+         f"{reg}, wind [250 degrees, 8 knots], runway [25], cleared to land.",
+         atc=True)
+
+    drow("PILOT",
+         f"Piste [25], Landung frei, {reg}.",
+         f"Runway [25], cleared to land, {reg}.")
+
+    drow("PILOT",
+         f"{reg}, Piste [25] verlassen über [Alpha].",
+         f"{reg}, runway [25] vacated via [Alpha].")
+
+    drow("TWR",
+         f"{reg}, rollen Sie zum GA-Vorfeld über [Alpha, Bravo], Squawk Standby.",
+         f"{reg}, taxi to GA apron via [Alpha, Bravo], squawk standby.",
+         atc=True)
+
+    drow("PILOT",
+         f"GA-Vorfeld über [Alpha, Bravo], Squawk Standby, {reg}.",
+         f"GA apron via [Alpha, Bravo], squawk standby, {reg}.")
+
+    drow("PILOT",
+         f"{reg}, Parkposition erreicht, auf Wiederhören.",
+         f"{reg}, on stand, goodbye.")
+
+    vbar("Mögliche Tower-Antworten  ·  Possible tower responses")
+
+    vrow("Einflug vorübergehend\nnicht möglich",
+         f"{reg}, können Sie [5 Minuten] außerhalb der CTR warten?\n"
+         f"→  Warte außerhalb CTR, {reg}.",
+         f"{reg}, can you hold outside the CTR for [5 minutes]?\n"
+         f"→  Holding outside CTR, {reg}.")
+
+    vrow("Squawk-Zuweisung\nSquawk assignment",
+         f"Squawk [7023].\n→  Squawk [7023], {reg}.",
+         f"Squawk [7023].\n→  Squawk [7023], {reg}.")
+
+    vrow("Sequenzierung hinter\nVerkehr  ·  Sequencing",
+         f"{reg}, Verkehr voraus, [Piper auf Endanflug Piste 25], Verkehr in Sicht?\n"
+         f"→  Verkehr in Sicht, {reg}.\n"
+         f"TWR: Folgen Sie dem Verkehr, Piste [25], Landung frei.",
+         f"{reg}, traffic ahead, [Piper on final runway 25], traffic in sight?\n"
+         f"→  Traffic in sight, {reg}.\n"
+         "TWR: Follow traffic, runway [25], cleared to land.")
+
+    page_footer(
+        f"CTR-Einflug nur mit ausdrücklicher Freigabe. ATIS vor Erstkontakt abhören. "
+        f"Meldepunkt Whiskey ist {dest.ident}-spezifisch — Bezeichnung vor jedem Flug im Chart prüfen."
+    )
 
 
 # ------------------------- destination briefing page -------------------------
@@ -1241,15 +1374,525 @@ def render_destination_page(pdf: FPDF, font: str, info: AirportInfo, vatsim: Vat
              align="C")
 
 
+# ------------------------- Navigraph Charts integration -------------------------
+
+def _decode_dms(token: str) -> tuple[float, float] | None:
+    """Parse a Navigraph/ICAO DMS coordinate like '520630N0075118E' → (lat, lon)."""
+    m = re.match(r'^(\d{2})(\d{2})(\d{2})([NS])(\d{3})(\d{2})(\d{2})([EW])$', token)
+    if not m:
+        return None
+    lat = int(m.group(1)) + int(m.group(2)) / 60 + int(m.group(3)) / 3600
+    if m.group(4) == 'S':
+        lat = -lat
+    lon = int(m.group(5)) + int(m.group(6)) / 60 + int(m.group(7)) / 3600
+    if m.group(8) == 'W':
+        lon = -lon
+    return lat, lon
+
+
+def _airport_position(apt_path: Path, icao: str) -> tuple[float, float] | None:
+    """Approximate airport lat/lon by averaging its runway endpoints from apt.dat."""
+    if not apt_path.exists():
+        return None
+    icao_upper = icao.upper()
+    in_target = False
+    lats: list[float] = []
+    lons: list[float] = []
+    try:
+        with open(apt_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if not parts:
+                    continue
+                if parts[0] == "1" and len(parts) >= 5:
+                    if in_target:
+                        break
+                    in_target = (parts[4].upper() == icao_upper)
+                elif in_target and parts[0] == "100" and len(parts) >= 20:
+                    try:
+                        lats += [float(parts[9]), float(parts[18])]
+                        lons += [float(parts[10]), float(parts[19])]
+                    except (ValueError, IndexError):
+                        pass
+    except OSError:
+        return None
+    if not lats:
+        return None
+    return sum(lats) / len(lats), sum(lons) / len(lons)
+
+
+def _build_nav_index(xplane_path: Path, idents: set[str]) -> dict[str, tuple[float, float, str]]:
+    """Resolve navaid/fix idents to (lat, lon, freq_str) from X-Plane's nav and fix databases."""
+    result: dict[str, tuple[float, float, str]] = {}
+    if not idents:
+        return result
+
+    # earth_nav.dat — VOR (type 3, freq in 10s of kHz → MHz) and NDB (type 2, freq in kHz)
+    nav_path = xplane_path / NAV_REL
+    if not nav_path.exists():
+        nav_path = xplane_path / NAV_FALLBACK_REL
+    if nav_path.exists():
+        try:
+            with open(nav_path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) < 9 or parts[0] not in {"2", "3"}:
+                        continue
+                    ident = parts[7]
+                    if ident in idents and ident not in result:
+                        try:
+                            lat, lon = float(parts[1]), float(parts[2])
+                            raw_freq = int(parts[4])
+                            if parts[0] == "3":
+                                freq_str = f"{raw_freq / 100:.2f}"
+                            else:
+                                freq_str = str(raw_freq)
+                            result[ident] = (lat, lon, freq_str)
+                        except ValueError:
+                            pass
+        except OSError:
+            pass
+
+    # earth_fix.dat — named waypoints/intersections (no frequency)
+    remaining = idents - set(result)
+    if remaining:
+        fix_path = xplane_path / FIX_REL
+        if fix_path.exists():
+            try:
+                with open(fix_path, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        parts = line.split()
+                        if len(parts) < 3:
+                            continue
+                        ident = parts[2]
+                        if ident in remaining and ident not in result:
+                            try:
+                                result[ident] = (float(parts[0]), float(parts[1]), "")
+                            except ValueError:
+                                pass
+            except OSError:
+                pass
+
+    return result
+
+
+def _navigraph_plan(data: dict, xplane_path: Path | None) -> Plan:
+    """Convert a parsed Navigraph flightSelectedFlight JSON to a Plan."""
+    routestring = data.get("routestring", "")
+    cruise_alt = float(data.get("cruisingAltitude") or 2500)
+
+    # Tokenise; drop routing keywords
+    tokens = [t for t in routestring.split() if t.upper() not in {"DCT", "N/A"}]
+    if not tokens:
+        sys.exit("Navigraph plan has an empty routestring.")
+
+    # Strip runway suffix from both ends (airports can carry e.g. EDLI-RW11)
+    tokens[0] = tokens[0].split("-")[0]
+    tokens[-1] = tokens[-1].split("-")[0]
+
+    # Navigraph sometimes stores the routestring reversed relative to the title.
+    # Detect via "X to Y" in the title and flip if needed.
+    title = data.get("title", "")
+    m_title = re.match(r'^(\w+)\s+to\s+(\w+)$', title.strip(), re.IGNORECASE)
+    if m_title:
+        expected_origin = m_title.group(1).upper()
+        if tokens[0].upper() != expected_origin and tokens[-1].upper() == expected_origin:
+            tokens = list(reversed(tokens))
+
+    # Sort tokens into inline lat/lon vs. named idents that need lookup
+    named_idents: set[str] = {t for t in tokens if _decode_dms(t) is None}
+
+    apt_pos: dict[str, tuple[float, float, str]] = {}
+    nav_pos: dict[str, tuple[float, float, str]] = {}
+
+    if xplane_path:
+        apt_path = xplane_path / APT_REL
+        for ident in named_idents:
+            p = _airport_position(apt_path, ident)
+            if p:
+                apt_pos[ident] = (p[0], p[1], "")
+        unresolved = named_idents - set(apt_pos)
+        if unresolved:
+            nav_pos = _build_nav_index(xplane_path, unresolved)
+
+    all_pos = {**apt_pos, **nav_pos}
+
+    waypoints: list[Waypoint] = []
+    for i, tok in enumerate(tokens):
+        coords = _decode_dms(tok)
+        if coords:
+            waypoints.append(Waypoint(name="", ident=tok, type="USER", lat=coords[0], lon=coords[1]))
+        else:
+            entry = all_pos.get(tok)
+            if entry is None:
+                print(f"[navigraph] could not resolve {tok!r} — skipped", file=sys.stderr)
+                continue
+            lat, lon, freq_str = entry
+            is_airport = (i == 0 or i == len(tokens) - 1)
+            waypoints.append(Waypoint(
+                name="", ident=tok,
+                type="AIRPORT" if is_airport else "VOR",
+                lat=lat, lon=lon,
+                freq=freq_str or None,
+            ))
+
+    if len(waypoints) < 2:
+        sys.exit("Navigraph plan: fewer than 2 waypoints could be resolved.")
+
+    return Plan(
+        waypoints=waypoints,
+        cruise_alt_ft=cruise_alt,
+        flightplan_type=data.get("rules", "VFR"),
+        cycle="Navigraph",
+        created=data.get("updatedAt", ""),
+    )
+
+
+def read_navigraph_flight(xplane_path: Path | None) -> Plan:
+    """Read the active flight plan from Navigraph Charts' Electron localStorage."""
+    import shutil
+    import tempfile
+
+    # ccl_chromium_reader is not on PyPI; look for it next to this script or in $HOME
+    script_dir = Path(__file__).parent
+    for candidate in [script_dir / "ccl_chromium_reader", Path.home() / "ccl_chromium_reader"]:
+        if candidate.exists():
+            sys.path.insert(0, str(candidate))
+            break
+
+    try:
+        from ccl_chromium_reader import ccl_chromium_localstorage
+    except ImportError:
+        sys.exit(
+            "ccl_chromium_reader not found. Install it next to navlog.py:\n"
+            "  pip install brotli\n"
+            "  pip install 'ccl_simplesnappy @ git+https://github.com/cclgroupltd/ccl_simplesnappy.git'\n"
+            "  git clone --depth 1 https://github.com/cclgroupltd/ccl_chromium_reader.git"
+        )
+
+    if not NAVIGRAPH_LDB.exists():
+        sys.exit(f"Navigraph Charts LevelDB not found at {NAVIGRAPH_LDB}")
+
+    # Copy to a temp dir — LevelDB is exclusively locked while Navigraph is open
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        shutil.copytree(NAVIGRAPH_LDB, tmp / "ldb")
+        with ccl_chromium_localstorage.LocalStoreDb(tmp / "ldb") as ls:
+            best = None
+            for rec in ls.iter_all_records():
+                if rec.script_key == "flightSelectedFlight" and rec.is_live and rec.value:
+                    if best is None or rec.leveldb_seq_number > best.leveldb_seq_number:
+                        best = rec
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if best is None:
+        sys.exit("No active flight plan found in Navigraph Charts.")
+
+    data = json.loads(best.value)
+    title = data.get("title", "?")
+    rules = data.get("rules", "?")
+    print(f"[navigraph] {title}  ({rules})")
+    return _navigraph_plan(data, xplane_path)
+
+
+# ------------------------- FMS export -------------------------
+
+def write_fms(plan: Plan, out_path: Path) -> None:
+    """Write an X-Plane FMS v3 flight plan file."""
+    type_map = {
+        "AIRPORT": 1,
+        "VOR": 3,
+        "NDB": 2,
+        "WAYPOINT": 11,
+        "INTERSECTION": 11,
+        "USER": 28,
+    }
+    n = len(plan.waypoints)
+    lines = ["I", "3 version", "1", str(n)]
+    for i, wp in enumerate(plan.waypoints):
+        type_code = type_map.get((wp.type or "").upper(), 28)
+        ident = (wp.ident or "UNKN")[:5]
+        alt = 0.0 if (i == 0 or i == n - 1) else float(plan.cruise_alt_ft)
+        lines.append(f"{type_code} {ident} {alt:.6f} {wp.lat:.6f} {wp.lon:.6f}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ------------------------- config / output path -------------------------
+
+def _load_env(path: Path) -> dict[str, str]:
+    """Parse a .env file (KEY=VALUE). Ignores blank lines and # comments."""
+    result: dict[str, str] = {}
+    if not path.exists():
+        return result
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            result[k.strip()] = v.strip().strip('"').strip("'")
+    return result
+
+
+def _smart_output(env: dict[str, str], dep_icao: str, dest_icao: str, ac_type: str) -> Path:
+    base = Path(env.get("NAVLOG_OUTPUT_DIR", ".")).expanduser()
+    subdir = base / f"{dep_icao.upper()}-{dest_icao.upper()}"
+    date_slug = datetime.now().strftime("%Y-%m-%d")
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", ac_type).strip("-").lower()
+    filename = f"navlog_{date_slug}_{slug}.pdf" if slug else f"navlog_{date_slug}.pdf"
+    return subdir / filename
+
+
+# ------------------------- METAR wind helper -------------------------
+
+def fetch_metar(icao: str, timeout: float = 6.0) -> str | None:
+    """Fetch a raw METAR from VATSIM's METAR endpoint. Returns None on failure."""
+    url = VATSIM_METAR_URL.format(icao=icao.upper())
+    req = urllib.request.Request(url, headers={"User-Agent": VATSIM_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8").strip()
+            return text if text else None
+    except (urllib.error.URLError, TimeoutError):
+        return None
+
+
+def _wind_from_metar(metar: str) -> tuple[float, float] | None:
+    """Extract (direction_deg, speed_kt) from a raw METAR string.
+
+    Returns None when wind is missing or can't be parsed.
+    Variable-direction wind (VRB) is treated as calm (000).
+    """
+    # Standard: dddssKT or dddssGggKT
+    m = re.search(r"\b(\d{3})(\d{2,3})(?:G\d{2,3})?KT\b", metar)
+    if m:
+        return float(m.group(1)) % 360, float(m.group(2))
+    # MPS variant (rare at VATSIM, convert to knots)
+    m = re.search(r"\b(\d{3})(\d{2,3})(?:G\d{2,3})?MPS\b", metar)
+    if m:
+        return float(m.group(1)) % 360, round(float(m.group(2)) * 1.944)
+    # Variable
+    m = re.search(r"\bVRB(\d{2,3})KT\b", metar)
+    if m:
+        return 0.0, float(m.group(1))
+    return None
+
+
+# ------------------------- interactive TUI -------------------------
+
+def _tui() -> argparse.Namespace:
+    """Interactive setup wizard, runs when navlog.py is called with no arguments."""
+    # Enable readline tab-completion for file paths
+    try:
+        import readline
+        import glob as _glob
+        readline.set_completer_delims(" \t\n;")
+        readline.parse_and_bind("tab: complete")
+        readline.set_completer(
+            lambda text, state: (
+                _glob.glob(text.replace("~", str(Path.home())) + "*") + [None]
+            )[state]
+        )
+    except Exception:
+        pass
+
+    B, C, G, DIM, R = "\033[1m", "\033[36m", "\033[32m", "\033[2m", "\033[0m"
+
+    def h(title: str) -> None:
+        print(f"\n{B}{C}{title}{R}")
+
+    print(f"\n{B}VFR Navlog{R}  —  no arguments given, running interactive setup")
+    print(f"{DIM}Tab-completes file paths. Press Enter to accept [defaults].{R}")
+
+    # --- Plan source ---
+    h("Plan source")
+    print("  [1]  Little Navmap .lnmpln file")
+    print("  [2]  Navigraph Charts  (reads live from the app, macOS only)")
+    while True:
+        src = input("  → [1]: ").strip() or "1"
+        if src in ("1", "2"):
+            break
+        print("  Enter 1 or 2.")
+
+    navigraph = src == "2"
+    plan_path: Path | None = None
+
+    dep_icao: str | None = None
+    cruise_alt_default: float = 2500.0
+
+    if not navigraph:
+        h("Flight plan file  (.lnmpln)")
+        while True:
+            raw = input("  Path: ").strip()
+            if not raw:
+                print("  (required)")
+                continue
+            p = Path(raw).expanduser()
+            if p.exists():
+                plan_path = p
+                break
+            print(f"  Not found: {p}")
+        # Parse early so we can suggest the departure ICAO and cruise altitude.
+        try:
+            _preview = parse_lnmpln(plan_path)
+            dep_icao = _preview.waypoints[0].ident if _preview.waypoints else None
+            cruise_alt_default = _preview.cruise_alt_ft
+        except Exception:
+            pass
+
+    # --- Aircraft ---
+    script_dir = Path(__file__).parent
+    ac_candidates = sorted(script_dir.glob("aircraft_*.json"))
+    if not ac_candidates:
+        ac_candidates = sorted(Path(".").glob("aircraft_*.json"))
+    ac_default = str(ac_candidates[0]) if ac_candidates else ""
+
+    h("Aircraft JSON")
+    if ac_candidates:
+        for i, p in enumerate(ac_candidates):
+            mark = f"  {G}← default{R}" if i == 0 else ""
+            print(f"  [{i + 1}]  {p.name}{mark}")
+        print("  [path]  or type a path to a different file")
+
+    aircraft_path: Path | None = None
+    while aircraft_path is None:
+        hint = f" [{Path(ac_default).name}]" if ac_default else ""
+        raw = input(f"  →{hint}: ").strip()
+        if not raw and ac_default:
+            aircraft_path = Path(ac_default)
+        elif raw.isdigit() and ac_candidates:
+            idx = int(raw) - 1
+            if 0 <= idx < len(ac_candidates):
+                aircraft_path = ac_candidates[idx]
+            else:
+                print(f"  Choose 1–{len(ac_candidates)}.")
+        else:
+            p = Path(raw).expanduser()
+            if p.exists():
+                aircraft_path = p
+            else:
+                print(f"  Not found: {p}")
+
+    # --- Registration ---
+    _ac_data: dict = {}
+    try:
+        _ac_data = json.loads(aircraft_path.read_text())
+    except Exception:
+        pass
+    reg_default = _ac_data.get("registration", "")
+
+    h("Aircraft registration")
+    hint = f" [{reg_default}]" if reg_default else ""
+    raw = input(f"  →{hint}: ").strip()
+    registration = raw if raw else reg_default
+
+    # --- Wind ---
+    h("Wind aloft  (DDD/SS, e.g. 270/15 — or 0/0 for calm)")
+    if dep_icao:
+        print(f"  [M]  fetch surface wind from VATSIM METAR at {dep_icao}")
+    else:
+        print("  [M]  fetch surface wind from VATSIM METAR  (you'll enter an ICAO)")
+    wind_str = "0/0"
+    while True:
+        raw = input("  → [0/0]: ").strip() or "0/0"
+        if raw.upper() == "M":
+            icao_q = dep_icao or input("  ICAO for METAR: ").strip().upper()
+            if not icao_q:
+                print("  (ICAO required)")
+                continue
+            print(f"  Fetching METAR for {icao_q}…", end="", flush=True)
+            metar = fetch_metar(icao_q)
+            if not metar:
+                print(f"\n  {DIM}Could not reach VATSIM METAR — enter wind manually.{R}")
+                continue
+            print(f"\r  {DIM}{metar}{R}")
+            wdata = _wind_from_metar(metar)
+            if wdata:
+                wind_str = f"{int(wdata[0]):03d}/{int(wdata[1]):02d}"
+                print(f"  {G}Using wind: {wind_str}{R}  {DIM}(surface METAR — not wind aloft){R}")
+                break
+            else:
+                print(f"  {DIM}Could not parse wind from METAR — enter manually.{R}")
+                continue
+        elif re.match(r"^\d{1,3}/\d{1,3}$", raw):
+            wind_str = raw
+            break
+        else:
+            print("  Format: 270/15  or  M to fetch from VATSIM METAR")
+
+    # --- Cruise altitude ---
+    h("Cruise altitude  (ft MSL)")
+    while True:
+        raw = input(f"  → [{int(cruise_alt_default)}]: ").strip() or str(int(cruise_alt_default))
+        try:
+            val = float(raw)
+            if val > 0:
+                cruise_alt_ft = val
+                break
+        except ValueError:
+            pass
+        print("  Enter a positive number in feet (e.g. 3500).")
+
+    # --- Magnetic variation ---
+    h("Magnetic variation  (e.g. 2.5E, 1.0W, -2.5)")
+    while True:
+        raw = input("  → [2.5E]: ").strip() or "2.5E"
+        if re.match(r"^[+-]?\d+(\.\d+)?[EWew]?$", raw.strip()):
+            magvar_str = raw
+            break
+        print("  Format: 2.5E  or  2.5W  or  -2.5")
+
+    # --- VATSIM ---
+    h("VATSIM  (fetch live ATC frequencies?)")
+    vatsim = input("  → [y/N]: ").strip().lower() in ("y", "yes")
+
+    # --- FMS ---
+    h("X-Plane FMS export")
+    fms_dir = DEFAULT_XPLANE / "Output" / "FMS plans"
+    xp_found = DEFAULT_XPLANE.exists()
+    if xp_found:
+        print(f"  {DIM}Output: {fms_dir}{R}")
+        fms_default = "Y"
+    else:
+        print(f"  {DIM}X-Plane not found at default path — FMS will go next to PDF if yes{R}")
+        fms_default = "N"
+    raw = input(f"  → [{fms_default}]: ").strip().lower()
+    fms = raw in ("y", "yes") or (not raw and xp_found)
+
+    print()
+
+    return argparse.Namespace(
+        navigraph=navigraph,
+        plan=plan_path,
+        aircraft=aircraft_path,
+        wind=wind_str,
+        magvar=magvar_str,
+        output=None,
+        vatsim=vatsim,
+        call_tower_nm=10.0,
+        xplane=DEFAULT_XPLANE,
+        registration=registration,
+        cruise_alt=cruise_alt_ft,
+        fms=fms,
+    )
+
+
 # ------------------------- CLI -------------------------
 
 def main():
-    ap = argparse.ArgumentParser(description="VFR navlog PDF from a Little Navmap plan.")
-    ap.add_argument("--plan", required=True, type=Path)
+    ap = argparse.ArgumentParser(
+        description="VFR navlog PDF from a Little Navmap plan or Navigraph Charts."
+    )
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--plan", type=Path, help="Little Navmap .lnmpln file")
+    src.add_argument("--navigraph", action="store_true",
+                     help="Read the active flight plan directly from Navigraph Charts (macOS).")
     ap.add_argument("--aircraft", required=True, type=Path)
     ap.add_argument("--wind", default="0/0", help="Wind aloft, DDD/SS, e.g. 270/15")
     ap.add_argument("--magvar", default="2.5E", help="Magnetic variation, e.g. 2.5E or -2.5")
-    ap.add_argument("--output", default="navlog.pdf", type=Path)
+    ap.add_argument("--output", default=None, type=Path)
     ap.add_argument("--vatsim", action="store_true",
                     help="Fetch live ATC frequencies from VATSIM for departure and destination.")
     ap.add_argument("--call-tower-nm", type=float, default=10.0,
@@ -1257,10 +1900,38 @@ def main():
     ap.add_argument("--xplane", type=Path, default=DEFAULT_XPLANE,
                     help="Path to X-Plane 12 root (for apt.dat / earth_nav.dat). "
                          "Set to '' to skip the destination-briefing page.")
-    args = ap.parse_args()
+    ap.add_argument("--registration", default=None,
+                    help="Override the aircraft registration from the JSON (e.g. D-EXXX).")
+    ap.add_argument("--cruise-alt", type=float, default=None,
+                    help="Override the cruise altitude from the flight plan (feet MSL, e.g. 3500).")
+    ap.add_argument("--fms", action="store_true",
+                    help="Write an X-Plane FMS flight plan to Output/FMS plans/ (or next to PDF if --xplane is unset).")
 
-    plan = parse_lnmpln(args.plan)
+    if not sys.argv[1:]:
+        args = _tui()
+    else:
+        args = ap.parse_args()
+
+    xplane_path: Path | None = Path(args.xplane) if args.xplane and str(args.xplane).strip() else None
+
+    if args.navigraph:
+        plan = read_navigraph_flight(xplane_path)
+        source_note = (
+            "Erzeugt aus Navigraph Charts — Werte ohne Gewähr. "
+            "Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
+        )
+    else:
+        plan = parse_lnmpln(args.plan)
+        source_note = (
+            "Erzeugt aus Little Navmap .lnmpln — Werte ohne Gewähr. "
+            "Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
+        )
+
     aircraft = json.loads(args.aircraft.read_text())
+    if getattr(args, "registration", None):
+        aircraft["registration"] = args.registration
+    if getattr(args, "cruise_alt", None) is not None:
+        plan.cruise_alt_ft = float(args.cruise_alt)
     wind = parse_wind(args.wind)
     magvar = parse_magvar(args.magvar)
 
@@ -1281,17 +1952,43 @@ def main():
     legs = compute_legs(plan, tas, wind, magvar, burn)
 
     dest_info: AirportInfo | None = None
-    if args.xplane and str(args.xplane).strip():
-        dest_info = load_destination_info(plan, args.xplane)
+    if xplane_path:
+        dest_info = load_destination_info(plan, xplane_path)
 
-    render(plan, aircraft, legs, wind, magvar, args.output,
+    if args.output is not None:
+        out = args.output
+    else:
+        env = _load_env(Path(__file__).parent / ".env")
+        out = _smart_output(
+            env,
+            plan.waypoints[0].ident,
+            plan.waypoints[-1].ident,
+            aircraft.get("type", ""),
+        )
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    render(plan, aircraft, legs, wind, magvar, out,
            vatsim=snapshot, call_tower_nm=args.call_tower_nm,
-           dest_info=dest_info)
-    print(f"Wrote {args.output}")
+           dest_info=dest_info, source_note=source_note)
+    print(f"Wrote {out}")
     total_d = sum(l.distance_nm for l in legs)
     total_t = sum(l.ete_min for l in legs)
     total_f = sum(l.fuel_l for l in legs)
     print(f"Total: {total_d:.1f} NM, {total_t:.0f} min, {total_f:.1f} L (trip only)")
+
+    if getattr(args, "fms", False):
+        dep_icao = plan.waypoints[0].ident.upper()
+        dest_icao = plan.waypoints[-1].ident.upper()
+        fms_name = f"{dep_icao}-{dest_icao}.fms"
+        if xplane_path:
+            fms_path = xplane_path / "Output" / "FMS plans" / fms_name
+        else:
+            fms_path = out.parent / fms_name
+        write_fms(plan, fms_path)
+        print(f"Wrote FMS  {fms_path}")
+
+    if sys.platform == "darwin":
+        subprocess.run(["open", str(out)], check=False)
 
 
 if __name__ == "__main__":
