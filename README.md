@@ -1,28 +1,20 @@
 # vfr-navlog
 
-A small Python script that turns a [Little Navmap](https://www.littlenavmap.org/) `.lnmpln` flight plan into a printable A4-landscape VFR navlog PDF, German LBA-style. Built for simulator use with X-Plane 12 and VATSIM, but the output is real-world readable.
+A Python script that turns a [Little Navmap](https://www.littlenavmap.org/) `.lnmpln` flight plan into a printable A4-landscape VFR navlog PDF, German LBA-style. Built for simulator use with X-Plane 12 and VATSIM, but the output is real-world readable.
 
-The `.lnmpln` format is Little Navmap's native flight-plan XML. You can build the plan in Little Navmap directly, or plan in **[Navigraph Charts](https://navigraph.com/products/charts)** and export to `.lnmpln` (File → Export → Little Navmap) — same file format either way, this script doesn't care which tool produced it.
+The `.lnmpln` format is Little Navmap's native flight-plan XML. You can build the plan in Little Navmap directly, or plan in **[Navigraph Charts](https://navigraph.com/products/charts)** and export (File → Export → Little Navmap) — same format either way.
 
-The PDF is four pages:
+![Navlog page 1](docs/screenshot-page1.png)
 
-1. **Navlog**: header, freigaben/wetter strip, frequency block, ATIS strip, leg-by-leg table with true course / magnetic heading / distance / groundspeed / ETE / fuel, fuel summary, planning assumptions.
-2. **FIS phraseology**: dialogue-style bilingual (DE/EN) cheat-sheet for the Bremen Information FIS contact — Erstanruf, Vollmeldung, squawk/QNH readback, traffic info exchange, frequency departure — plus a variations table for workload denial, no radar contact, and POB query.
-3. **CTR phraseology**: the full inbound sequence at the destination — tower initial call, position report with ATIS, CTR entry clearance via Whiskey, reporting-point call, downwind join, landing clearance, runway vacated, taxi to GA apron — plus a variations table for temporary holds, squawk assignments, and traffic sequencing.
-4. **Destination briefing**: airport stammdaten, runway table with ILS LOC frequencies pulled from X-Plane's `earth_nav.dat`, communication frequencies recap, and the live VATSIM ATIS text if a controller is broadcasting.
+## Output
 
-It also fetches **live VATSIM controller frequencies** for the departure and destination airports, marks the tower-call leg, and can write an **X-Plane FMS flight plan** directly into X-Plane's `Output/FMS plans/` folder.
+Five pages:
 
-![placeholder — drop a screenshot here once you've generated one](docs/screenshot-page1.png)
-
-## What it does
-
-- Parses an `.lnmpln` (XML) plan exported from Little Navmap, or reads the active plan directly from **Navigraph Charts** (macOS only).
-- Computes per-leg true course, distance, wind-corrected magnetic heading, groundspeed, time, and fuel from a JSON aircraft profile and a single wind aloft.
-- Renders an LBA-style navlog using [fpdf2](https://github.com/py-pdf/fpdf2) — no external server, single PDF on disk.
-- Optionally queries VATSIM's public data feed to populate the Tower / Ground / ATIS rows and the tower-call marker with live frequencies.
-- Writes an X-Plane FMS v3 flight plan into `Output/FMS plans/` so you can load the route in the sim before your VATSIM session.
-- Highlights the columns you actually scan in cruise (TC, MH, Dist, GS, ETE) in bold/larger type.
+1. **Navlog** — header strip, frequency block with live VATSIM frequencies (GND/TWR/ATIS + en-route radar), ATIS strip, leg-by-leg table (TC / MH / dist / GS / ETE / fuel), fuel summary, planning assumptions, tower-call marker.
+2. **FIS / Radar phraseology** — bilingual (DE/EN) dialogue cheat-sheet for the en-route FIS or radar contact. Adapts automatically: when Langen / Bremen / München Radar is online on VATSIM, the page title, note, and squawk guidance update to reflect radar service rather than basic FIS.
+3. **CTR phraseology** — the full inbound sequence at the destination: initial tower call, full position report with ATIS letter, CTR entry clearance via Whiskey, Whiskey call, downwind join, landing clearance, runway vacated, taxi to GA apron. Variations table covers holds outside the CTR, squawk assignments, and traffic sequencing.
+4. **Destination briefing** — airport data (elevation, TA/TL, IATA), runway table with ILS LOC frequencies from X-Plane's `earth_nav.dat`, communication frequencies, live VATSIM ATIS text.
+5. **Weather briefing** — two-column METAR + TAF for departure and destination (via VATSIM weather proxy), parsed key values (wind, visibility, ceiling, QNH, phenomena), VFR / MVFR / IFR go/no-go assessment table, en-route radar banner.
 
 ## Install
 
@@ -32,28 +24,35 @@ Python 3.10+ and [fpdf2](https://pypi.org/project/fpdf2/):
 pip install fpdf2
 ```
 
-On macOS the script registers `Arial.ttf` from `/System/Library/Fonts/Supplemental/` so umlauts render. On other platforms it falls back to core Helvetica — add a Unicode TTF to `FONT_CANDIDATES` at the top of `navlog.py` if you need it.
+On macOS the script registers `Arial.ttf` from `/System/Library/Fonts/Supplemental/` so umlauts render. On other platforms it falls back to core Helvetica.
+
+### Navigraph Charts source (macOS only)
+
+To read the active plan directly from Navigraph Charts, clone the Chromium local-storage reader next to `navlog.py`:
+
+```
+pip install brotli
+pip install 'ccl_simplesnappy @ git+https://github.com/cclgroupltd/ccl_simplesnappy.git'
+git clone --depth 1 https://github.com/cclgroupltd/ccl_chromium_reader.git
+```
 
 ## Interactive mode
-
-Run the script with no arguments for a step-by-step wizard:
 
 ```
 python3 navlog.py
 ```
 
-It will ask for:
+The wizard asks for:
 
-1. Plan source — Little Navmap `.lnmpln` file or Navigraph Charts (live read, macOS only)
+1. Plan source — `.lnmpln` file or Navigraph Charts live read
 2. Aircraft JSON
-3. Aircraft registration (defaults to the value in the JSON, overridable)
-4. Wind aloft — type `DDD/SS` or press `M` to fetch the surface METAR from VATSIM
-5. Cruise altitude in ft MSL (defaults to whatever the plan file says)
+3. Registration (defaults to JSON value, overridable)
+4. Wind aloft — `DDD/SS` or press `M` to fetch the surface METAR from VATSIM
+5. Cruise altitude in ft MSL
 6. Magnetic variation
-7. Whether to pull live VATSIM ATC frequencies
+7. Whether to fetch live VATSIM data (ATC frequencies + weather)
 8. Whether to write an X-Plane FMS file
-
-Tab-completion works for file paths.
+9. Whether to generate an ICAO FPL for VATSIM prefile — asks for EOBT, POB, equipment code, wake category, alternate, and pilot name, then opens `my.vatsim.net/pilots/flightplan/beta` pre-filled in your browser
 
 ## CLI
 
@@ -66,6 +65,8 @@ python3 navlog.py \
     --cruise-alt 2500 \
     --vatsim \
     --fms \
+    --fpl-eobt 1030 \
+    --fpl-pob 2 \
     --output navlog.pdf
 ```
 
@@ -76,75 +77,117 @@ python3 navlog.py \
 | `--plan` | — | Little Navmap `.lnmpln` file. Mutually exclusive with `--navigraph`. |
 | `--navigraph` | off | Read the active plan from Navigraph Charts (macOS). |
 | `--aircraft` | required | JSON profile (see `aircraft_c172.json`). |
-| `--registration` | from JSON | Override the aircraft registration for this run (e.g. `D-EXXX`). |
+| `--registration` | from JSON | Override the aircraft registration for this run. |
 | `--wind` | `0/0` | Wind aloft `DDD/SS`, e.g. `270/15`. Applied uniformly to every leg. |
-| `--cruise-alt` | from plan | Override the cruise altitude from the flight plan (feet MSL). |
+| `--cruise-alt` | from plan | Override cruise altitude (feet MSL). |
 | `--magvar` | `2.5E` | Magnetic variation. `4E`, `-3.5`, `2.5W` all work. |
-| `--output` | auto | Output path. Defaults to `<dep>-<dest>/navlog_<date>_<type>.pdf` next to the script. |
-| `--vatsim` | off | Fetch live ATC frequencies from VATSIM. One HTTPS request, fails soft. |
-| `--fms` | off | Write an X-Plane FMS v3 flight plan to `Output/FMS plans/<dep>-<dest>.fms` under the X-Plane root. Falls back to the PDF's directory if `--xplane` is unset. |
-| `--call-tower-nm` | `10` | Distance threshold (NM remaining) at which to flag the tower-call leg. `0` disables. |
-| `--xplane` | macOS Steam default | Path to X-Plane 12 root. Used for `apt.dat`, `earth_nav.dat`, and FMS output. Pass `--xplane ""` to skip the destination-briefing page. |
+| `--output` | auto | Output path. Defaults to `<dep>-<dest>/navlog_<date>_<type>.pdf`. |
+| `--vatsim` | off | Fetch live VATSIM data: ATC frequencies, en-route radar, METAR/TAF. |
+| `--fms` | off | Write an X-Plane FMS v3 flight plan to `Output/FMS plans/`. |
+| `--call-tower-nm` | `10` | NM remaining threshold for the tower-call leg marker. `0` disables. |
+| `--xplane` | macOS Steam default | X-Plane 12 root. Pass `--xplane ""` to skip the destination-briefing page. |
+| `--fpl-eobt` | — | Generate an ICAO FPL with this EOBT (HHMM UTC). Triggers FPL output. |
+| `--fpl-pob` | `2` | Persons on board. |
+| `--fpl-equipment` | `SDFG/C` | ICAO field 10 equipment/surveillance code. |
+| `--fpl-wake` | `L` | Wake turbulence category (L / M / H / J). |
+| `--fpl-alternate` | — | Alternate aerodrome ICAO. |
+| `--fpl-pilot` | — | Pilot surname for FPL field 19C. |
+
+## VATSIM integration
+
+When `--vatsim` is set, the script makes three types of requests:
+
+**ATC frequencies** — single GET against `https://data.vatsim.net/v3/vatsim-data.json`. Callsigns of the form `<ICAO>_GND`, `_TWR`, `_ATIS`, `_DEL`, `_APP`, `_CTR` are matched; split sectors (`EDDG_N_TWR`) handled by suffix. Frequencies populate the navlog's frequency block and the tower-call marker.
+
+**En-route radar** — the script detects which German FIR the route overflies (EDGG Langen, EDWW Bremen, EDMM München) from waypoint latitudes and looks for online CTR stations. If Langen Radar is online, its frequency appears in a dedicated row in the frequency block (highlighted in blue) and the phraseology page 2 title and note update to reflect radar service, including the correct squawk guidance.
+
+**Weather** — METAR and TAF for departure and destination via `metar.vatsim.net`. Results appear on the weather briefing page (page 5) with parsed wind, visibility, ceiling, temperature, QNH, and a VFR / MVFR / IFR assessment. Neither page is generated nor any request is made if `--vatsim` is off.
+
+All network calls fail soft — if a request times out or returns an error, the corresponding cells stay blank and the script continues.
+
+## ICAO FPL export
+
+The script generates an ICAO ATS message ready for import into `my.vatsim.net/pilots/flightplan/beta`:
+
+```
+(FPL-DEXXX-VG
+-C172/L-SDFG/C
+-EDLI1030
+-N0107A025 DCT OSN DCT
+-EDDG0022 EDLP
+-DOF/260529 REG/DEXXX
+-E/0602 P/002 R/UV S/- J/-)
+```
+
+Key points:
+- Altitude is ICAO `Axxx` format (hundreds of feet) — `A025` for 2500 ft. `VFR` as a level token is not accepted by the parser.
+- Coordinate waypoints (e.g. `521430N0075330E` from user-defined points) are stripped from the route; only named fixes are kept.
+- Aircraft type uses the `icao_type` field from the aircraft JSON when present (e.g. `C172`, not `C172S` which is the model name, not the Doc 8643 designator).
+- On macOS, the script builds the pre-fill URL and opens `my.vatsim.net/pilots/flightplan/beta?raw=…` directly in your browser. The form arrives ready to file.
+- The `.fpl` file is also saved next to the PDF.
 
 ## Aircraft profile
 
-Edit `aircraft_c172.json` or write your own. Fields:
+Edit `aircraft_c172.json` or write your own. The script reads:
 
-- `type`, `registration` — printed in the header and templated into the phraseology pages. The `--registration` flag or the TUI prompt overrides `registration` for a single run without editing the file.
-- `performance.tas_cruise` — kt, used for navlog math.
-- `performance.fuel_burn_cruise_lph`, `fuel_burn_climb_lph`, `fuel_burn_taxi_lph` — for the fuel summary.
-- `fuel.capacity_usable_l`, `reserve_minutes`, `taxi_minutes`, `approach_minutes`, `alternate_minutes` — fuel block buckets.
-- `mass_balance.*` — currently informational only; the script does not render a W&B page yet.
+| Field | Purpose |
+|-------|---------|
+| `type` | Displayed in the PDF header and phraseology pages |
+| `icao_type` | ICAO Doc 8643 designator used in the FPL (overrides `type`). Set when the two differ, e.g. `C172S` → `C172`. |
+| `registration` | Default registration; overridable via `--registration` or TUI |
+| `performance.tas_cruise` | kt — navlog math |
+| `performance.fuel_burn_cruise_lph` | cruise burn for fuel summary and endurance |
+| `performance.fuel_burn_climb_lph` | climb burn |
+| `performance.fuel_burn_taxi_lph` | taxi burn |
+| `fuel.capacity_usable_l` | usable fuel for endurance calculation |
+| `fuel.reserve_minutes` | reserve bucket |
+| `fuel.taxi_minutes` | taxi bucket |
+| `fuel.approach_minutes` | approach/circuit bucket |
+| `fuel.alternate_minutes` | alternate bucket (0 = none planned) |
 
-The bundled `aircraft_c172.json` uses Cessna 172S POH-typical planning numbers at 65% power. **Verify against your aircraft's POH before flying.**
+`mass_balance` is parsed but not yet rendered — present for future W&B expansion.
+
+The bundled `aircraft_c172.json` uses Cessna 172S POH-typical numbers at 65% power. **Verify against your aircraft's POH before flying.**
 
 ## Phraseology pages
 
-Two dedicated pages, both templated to the registration, aircraft type, departure, and destination from the plan.
+Both pages are templated to the registration, aircraft type, departure, and destination from the plan.
 
-**Page 2 — FIS Bremen Information.** The complete dialogue from first call to frequency departure. Rows are color-coded: pale blue for pilot transmissions, amber for FIS. Sections A and B cover the Erstanruf → Vollmeldung → squawk/QNH assignment → readback → optional traffic-info exchange → frequency departure. The variations table at the bottom covers the three situations that catch pilots off guard: workload denial (the "Squawk 7000, goodbye" response), no radar contact, and a POB query.
+**Page 2 — FIS / en-route Radar.** When `--vatsim` is active and a radar station is online (e.g. Langen Radar), the page title shows the station name and live frequency, and the note box explains radar service semantics — squawk as instructed, separation is possible. When no radar is online it falls back to the standard Bremen Information FIS dialogue (Erstanruf, Vollmeldung, squawk 7000 on departure, workload denial and no-radar-contact variations).
 
-**Page 3 — CTR entry via Whiskey.** Everything from the initial tower call to parking at the GA apron. Section C is the clearance sequence: short call, full report with ATIS letter, entry clearance via Whiskey, readback, "report Whiskey" assignment. Section D continues from the Whiskey call through downwind, landing clearance, vacating the runway, taxi to GA, and on-stand. The variations table covers a temporary hold outside the CTR, a squawk assignment mid-sequence, and traffic sequencing all the way through to "cleared to land."
+**Page 3 — CTR entry via Whiskey.** EDDG-specific. The reporting-point name "Whiskey" and the assumed entry runway must be verified against current charts before each flight. The tower frequency in the subtitle is populated live from VATSIM when available.
 
-The FIS callsign is hardcoded to *Bremen Information*. For southern Germany change it to *Langen Information* or *München Information* in `render_phraseology`. The reporting-point name "Whiskey" is EDDG-specific — substitute the correct VRP name for any other destination.
+## Destination briefing
+
+Reads from X-Plane's local nav data — no internet, no scraping:
+
+- `apt.dat` — elevation, transition altitude/level, IATA, runway endpoints / width / surface. Runway length is great-circle between endpoints.
+- `earth_nav.dat` — ILS LOC entries (type 4/5) joined to runways.
+
+Degrades gracefully if the X-Plane files aren't found: comm frequencies and ATIS still appear, runway/ILS sections note the missing data.
+
+## Tower-call marker
+
+The script walks legs forward. The first leg whose end sits within `--call-tower-nm` of the destination is the call leg; the marker anchors at its start so the cue appears early enough to dial in the radio. If VATSIM has Tower online, the marker shows the live frequency (`→ TWR 129.805`); falls back to APP if only Approach is up, or `→ EDDG TWR rufen` if neither.
 
 ## X-Plane FMS export
 
-With `--fms` (or answering Y in the TUI), the script writes a version-3 FMS file to:
+With `--fms`, writes a version-3 FMS file to:
 
 ```
 <xplane-root>/Output/FMS plans/<DEP>-<DEST>.fms
 ```
 
-Type codes follow the X-Plane convention: `1` = airport, `3` = VOR, `2` = NDB, `11` = intersection, `28` = user waypoint. Cruise altitude is written on en-route waypoints; departure and destination get altitude `0`. Load it in X-Plane's FMS or the G1000/G530 avionics before you connect to VATSIM.
+Type codes: `1` = airport, `3` = VOR, `2` = NDB, `11` = intersection, `28` = user waypoint. Load before connecting to VATSIM.
 
-## How the tower-call marker works
+## Limitations
 
-The script walks legs forward from departure. The first leg whose **end** sits inside the `--call-tower-nm` threshold is the call leg. The marker is anchored at the **start** of that leg — the waypoint the pilot is leaving — so the cue appears early enough to dial the radio before the next checkpoint.
-
-If VATSIM has the destination Tower online, the marker shows the live frequency: `→ TWR 129.805`. If only Approach is up, it falls back to APP. If neither, you get `→ EDDG TWR rufen`. Set `--call-tower-nm 0` to disable entirely.
-
-## Destination briefing page
-
-Page 4 reads from X-Plane's local nav data — no internet, no scraping:
-
-- `apt.dat` from `Global Scenery/Global Airports/Earth nav data/` — elevation, transition altitude/level, IATA code, runway endpoints/width/surface. Runway length is the great-circle distance between the two endpoints.
-- `earth_nav.dat` from `Custom Data/` (Navigraph) or `Resources/default data/` (Laminar) — ILS LOC entries (type 4/5) joined to runways.
-
-The "Frequenzen & ATIS" block layers VATSIM data on top: live frequencies plus the verbatim ATIS text. If `--xplane` points somewhere without the expected files, the page degrades gracefully — comm frequencies and ATIS still appear, runway/ILS sections show a "data not found" note.
-
-## VATSIM data
-
-Single GET against `https://data.vatsim.net/v3/vatsim-data.json`. Callsigns of the form `<ICAO>_GND`, `<ICAO>_TWR`, `<ICAO>_ATIS`, `<ICAO>_DEL`, `<ICAO>_APP` are matched; split sectors (`EDDM_N_TWR`) are handled by suffix. If the request fails, the script emits a stderr note and continues with blank frequency cells.
-
-## Limitations / known scope
-
-- Single wind aloft applied uniformly. No per-leg wind, no wind gradient, no wind aloft forecast parsing.
-- No mass & balance or takeoff/landing distance computation. Stations are in the JSON for future expansion.
-- Magnetic variation is a single constant. Fine for Germany; less accurate across large magvar gradients.
+- Single wind aloft, applied uniformly. No per-leg wind, gradient, or forecast parsing.
+- No mass & balance or performance calculation beyond fuel.
+- Magnetic variation is a single constant — fine for Germany, less accurate over large gradients.
 - No MORA lookup.
-
-PRs welcome.
+- FIR detection for en-route radar is latitude-based only — coarse, works for German routes.
+- Phraseology pages are tailored to the EDLI→EDDG route (Bremen/Langen FIS, Whiskey VRP at EDDG). Adapt for other routes.
 
 ## License
 
