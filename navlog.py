@@ -34,6 +34,7 @@ from fpdf import FPDF
 
 VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
 VATSIM_METAR_URL = "https://metar.vatsim.net/metar.php?id={icao}"
+VATSIM_TAF_URL  = "https://metar.vatsim.net/taf.php?id={icao}"
 VATSIM_UA = "navlog.py/1.0 (+local VFR planning script)"
 
 # VATSIM convention: tune 122.800 ("UNICOM") whenever no ATC station is online
@@ -227,6 +228,7 @@ def fetch_vatsim(icaos: list[str], timeout: float = 6.0) -> VatsimSnapshot | Non
         "ATIS": "atis",
         "DEL": "delivery",
         "APP": "approach",
+        "CTR": "radar",
     }
 
     out: dict[str, dict[str, str]] = {icao.upper(): {} for icao in icaos if icao}
@@ -260,6 +262,49 @@ def fetch_vatsim(icaos: list[str], timeout: float = 6.0) -> VatsimSnapshot | Non
         frequencies=out,
         atis_text=atis_out,
     )
+
+
+# ------------------------- FIR / en-route radar helpers -------------------------
+
+_FIR_NAMES: dict[str, str] = {
+    "EDGG": "Langen Radar",
+    "EDWW": "Bremen Radar",
+    "EDMM": "München Radar",
+    "EDYY": "Berlin Radar",
+}
+
+
+def _german_firs_for_route(waypoints: list[Waypoint]) -> list[str]:
+    """Return VATSIM FIR ICAO prefix(es) for waypoints in German airspace.
+
+    Uses a rough latitude split: ≥53.5° → Bremen, ≤48° → Munich, else Langen.
+    """
+    german_wps = [wp for wp in waypoints if (wp.ident or "").upper().startswith("ED")]
+    if not german_wps:
+        return []
+    firs: set[str] = set()
+    for wp in german_wps:
+        if wp.lat >= 53.5:
+            firs.add("EDWW")
+        elif wp.lat <= 48.0:
+            firs.add("EDMM")
+        else:
+            firs.add("EDGG")
+    return sorted(firs)
+
+
+def _find_radar_online(
+    vatsim: "VatsimSnapshot | None",
+    fir_icaos: list[str],
+) -> tuple[str, str] | None:
+    """Return (station_name, frequency) for the first online CTR station, else None."""
+    if not vatsim or not fir_icaos:
+        return None
+    for fir in fir_icaos:
+        freq = vatsim.frequencies.get(fir.upper(), {}).get("radar", "")
+        if freq:
+            return _FIR_NAMES.get(fir.upper(), f"{fir} Radar"), freq
+    return None
 
 
 # ------------------------- X-Plane nav data -------------------------
@@ -500,7 +545,7 @@ def fmt_int(x: float, width: int = 0) -> str:
     return f"{int(round(x)):>{width}d}"
 
 
-def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0, dest_info: AirportInfo | None = None, source_note: str = "") -> None:
+def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0, dest_info: AirportInfo | None = None, source_note: str = "", fir_icaos: list[str] | None = None, weather: "WeatherBriefing | None" = None) -> None:
     pdf = NavlogPDF()
     font = install_fonts(pdf)
     pw = pdf.w - pdf.l_margin - pdf.r_margin
@@ -584,7 +629,7 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
     pdf.cell(col1_w, 4, "", border="LR")
     pdf.cell(col_rest, 4, f" {departure.ident} (Abflug)", border="R")
     pdf.cell(col_rest, 4, f" {destination.ident} (Ziel)", border="R")
-    sub_rh = (block_h - 8) / 4
+    sub_rh = (block_h - 8) / 5  # Ground + Tower + ATIS + Radar/FIS + UNICOM
     for i, (label, primary, fallback) in enumerate(fr_rows):
         ry = y + 8 + i * sub_rh
         pdf.set_xy(fr_x, ry)
@@ -604,8 +649,24 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
         pdf.cell(col_rest, sub_rh, " " + dep_v if dep_v else "", border=1)
         pdf.cell(col_rest, sub_rh, " " + dest_v if dest_v else "", border=1)
 
+    # Radar / FIS row — spans dep+dest columns, highlighted in pale blue when online.
+    radar_info = _find_radar_online(vatsim, fir_icaos or [])
+    radar_y = y + 8 + 3 * sub_rh
+    pdf.set_xy(fr_x, radar_y)
+    pdf.set_font(font, "B" if radar_info else "", 8)
+    if radar_info:
+        radar_name, radar_freq = radar_info
+        pdf.set_fill_color(225, 240, 255)
+        pdf.cell(col1_w, sub_rh, f" {radar_name}", border=1, fill=True)
+        pdf.cell(col_rest * 2, sub_rh, f" {radar_freq}", border=1, fill=True)
+        pdf.set_fill_color(255, 255, 255)
+    else:
+        pdf.set_font(font, "", 8)
+        pdf.cell(col1_w, sub_rh, " Radar / FIS", border=1)
+        pdf.cell(col_rest * 2, sub_rh, "", border=1)
+
     # UNICOM row: merged across the full Frequenzen width, bold and centered.
-    unicom_y = y + 8 + 3 * sub_rh
+    unicom_y = y + 8 + 4 * sub_rh
     pdf.set_xy(fr_x, unicom_y)
     pdf.set_fill_color(235, 235, 235)
     pdf.set_font(font, "B", 9)
@@ -859,18 +920,21 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
     note = source_note or "Erzeugt aus Little Navmap .lnmpln — Werte ohne Gewähr. Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
     pdf.cell(0, 3, note, align="C")
 
-    render_phraseology(pdf, font, plan, aircraft, vatsim)
+    render_phraseology(pdf, font, plan, aircraft, vatsim, fir_icaos or [])
 
     if dest_info is not None:
         render_destination_page(pdf, font, dest_info, vatsim)
+
+    if weather is not None:
+        render_weather_page(pdf, font, weather, fir_icaos=fir_icaos, vatsim=vatsim)
 
     pdf.output(str(out))
 
 
 # ------------------------- phraseology page -------------------------
 
-def render_phraseology(pdf: FPDF, font: str, plan: Plan, aircraft: dict, vatsim: VatsimSnapshot | None) -> None:
-    """Two-page phraseology: (1) FIS Bremen Information, (2) CTR entry via Whiskey."""
+def render_phraseology(pdf: FPDF, font: str, plan: Plan, aircraft: dict, vatsim: VatsimSnapshot | None, fir_icaos: list[str] | None = None) -> None:
+    """Two-page phraseology: (1) FIS / Radar en route, (2) CTR entry via Whiskey."""
     dep = plan.waypoints[0]
     dest = plan.waypoints[-1]
     reg = aircraft.get("registration", "D-XXXX")
@@ -984,12 +1048,20 @@ def render_phraseology(pdf: FPDF, font: str, plan: Plan, aircraft: dict, vatsim:
         pdf.set_font(font, "I", 6)
         pdf.cell(0, 3, text, align="C")
 
-    # ── PAGE 1: FIS Bremen Information ────────────────────────────────────────
+    # ── PAGE 1: FIS / en-route Radar ─────────────────────────────────────────
+    radar_info = _find_radar_online(vatsim, fir_icaos or [])
+    radar_name = radar_info[0] if radar_info else None
+    radar_freq = radar_info[1] if radar_info else None
+
     pdf.add_page()
 
     pdf.set_xy(pdf.l_margin, pdf.t_margin)
     pdf.set_font(font, "B", 13)
-    pdf.cell(pw, 7, "Sprechgruppen VFR  ·  1: FIS Bremen Information", align="C")
+    if radar_name:
+        page1_title = f"Sprechgruppen VFR  ·  1: {radar_name}  ({radar_freq})"
+    else:
+        page1_title = "Sprechgruppen VFR  ·  1: FIS Bremen Information"
+    pdf.cell(pw, 7, page1_title, align="C")
     pdf.ln(8)
     pdf.set_font(font, "I", 8)
     pdf.cell(pw, 4,
@@ -998,11 +1070,19 @@ def render_phraseology(pdf: FPDF, font: str, plan: Plan, aircraft: dict, vatsim:
              align="C")
     pdf.ln(6)
 
-    note_box(
-        "Bremen Information (Langen Center) = Fluginformationsdienst, keine Staffelung. "
-        "Erstanruf: nur Rufzeichen — erst nach Rückfrage die Vollmeldung abgeben. "
-        "POB immer nennen. Squawk VFR = 7000. Frequenz: AIP / Streckenkarte prüfen."
-    )
+    if radar_name:
+        note_box(
+            f"{radar_name} ONLINE — {radar_freq} MHz (VATSIM live).  "
+            "Radardienst: aktive Staffelung möglich. "
+            "Erstanruf: nur Rufzeichen — nach Rückfrage Vollmeldung mit Position, Höhe, POB. "
+            "Squawk wie angewiesen (kein automatisches 7000)."
+        )
+    else:
+        note_box(
+            "Bremen Information (Langen Center) = Fluginformationsdienst, keine Staffelung. "
+            "Erstanruf: nur Rufzeichen — erst nach Rückfrage die Vollmeldung abgeben. "
+            "POB immer nennen. Squawk VFR = 7000. Frequenz: AIP / Streckenkarte prüfen."
+        )
 
     section_bar("A · Erstkontakt & Vollmeldung  ·  Initial contact & full position report")
 
@@ -1374,6 +1454,223 @@ def render_destination_page(pdf: FPDF, font: str, info: AirportInfo, vatsim: Vat
              align="C")
 
 
+# ------------------------- weather briefing page -------------------------
+
+def render_weather_page(pdf: FPDF, font: str, briefing: WeatherBriefing, fir_icaos: list[str] | None = None, vatsim: "VatsimSnapshot | None" = None) -> None:
+    pdf.add_page()
+    pw   = pdf.w - pdf.l_margin - pdf.r_margin
+    GAP  = 3.0
+    cw   = (pw - GAP) / 2          # width of each column
+    col_xs = [pdf.l_margin, pdf.l_margin + cw + GAP]
+
+    C_HDR   = (210, 220, 235)
+    C_SEC   = (232, 232, 232)
+    C_VFR   = (210, 238, 210)
+    C_MVFR  = (255, 243, 200)
+    C_IFR   = (255, 215, 215)
+    C_RADAR = (225, 240, 255)
+    LH = 4.0   # line height
+
+    # ── title ─────────────────────────────────────────────────────────────────
+    radar_info = _find_radar_online(vatsim, fir_icaos or [])
+    radar_str  = f"  ·  {radar_info[0]} {radar_info[1]}" if radar_info else ""
+    pdf.set_xy(pdf.l_margin, pdf.t_margin)
+    pdf.set_font(font, "B", 12)
+    pdf.cell(pw, 7,
+             f"Wetterbriefing  ·  {briefing.dep_icao} → {briefing.dest_icao}"
+             f"  ({briefing.fetched_at}){radar_str}",
+             align="C")
+    content_y = pdf.t_margin + 8
+
+    # ── two-column weather sections ───────────────────────────────────────────
+    col_data = [
+        ("Abflug",   briefing.dep_icao,  briefing.dep_metar_raw,  briefing.dep_taf_raw,  briefing.dep_metar),
+        ("Ziel",     briefing.dest_icao, briefing.dest_metar_raw, briefing.dest_taf_raw, briefing.dest_metar),
+    ]
+
+    def _metar_rows(p: ParsedMetar) -> list[tuple[str, str]]:
+        if p.wind_kt is not None:
+            w = ("VRB" if p.wind_vrb else f"{p.wind_dir:03d}°") + f" / {p.wind_kt} kt"
+            if p.wind_gust_kt:
+                w += f"  G{p.wind_gust_kt}"
+        else:
+            w = "—"
+        if p.cavok:
+            vis_str  = "CAVOK"
+            ceil_str = "CAVOK"
+        else:
+            vis_str  = f"{p.vis_m} m" if p.vis_m is not None else "—"
+            ceil_str = f"{p.ceiling_ft} ft" if p.ceiling_ft else "—"
+        def _tc(v):
+            return f"{v:+.0f} °C" if v is not None else "—"
+        return [
+            ("Wind",     w),
+            ("Sicht",    vis_str),
+            ("Decke",    ceil_str),
+            ("Wolken",   "  ".join(p.clouds) if p.clouds else ("CAVOK" if p.cavok else "—")),
+            ("T / Td",   f"{_tc(p.temp_c)} / {_tc(p.dewpoint_c)}"),
+            ("QNH",      f"{p.qnh_hpa} hPa" if p.qnh_hpa else "—"),
+            ("Wetter",   "  ".join(p.phenomena) if p.phenomena else "—"),
+        ]
+
+    final_ys: list[float] = []
+
+    for col_idx, (label, icao, metar_raw, taf_raw, parsed) in enumerate(col_data):
+        x = col_xs[col_idx]
+        y = content_y
+
+        # Column header
+        pdf.set_fill_color(*C_HDR)
+        pdf.set_font(font, "B", 10)
+        pdf.set_xy(x, y)
+        pdf.cell(cw, 6, f"  {icao}  ·  {label}", border=1, fill=True)
+        y += 6
+
+        # METAR header
+        pdf.set_fill_color(*C_SEC)
+        pdf.set_font(font, "B", 8)
+        pdf.set_xy(x, y)
+        pdf.cell(cw, 5, "  METAR", border=1, fill=True)
+        y += 5
+
+        # METAR raw text
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_font(font, "", 7.5)
+        pdf.set_xy(x, y)
+        if metar_raw:
+            pdf.multi_cell(cw, LH, metar_raw, border="LBR")
+            y = pdf.get_y()
+        else:
+            pdf.cell(cw, 7, "  Nicht verfügbar", border=1)
+            y += 7
+
+        # Parsed METAR key values
+        if parsed:
+            for row_label, row_val in _metar_rows(parsed):
+                pdf.set_xy(x, y)
+                pdf.set_font(font, "B", 7.5)
+                pdf.cell(cw * 0.28, LH + 0.5, f" {row_label}", border=1)
+                pdf.set_font(font, "", 8)
+                pdf.cell(cw * 0.72, LH + 0.5, f" {row_val}", border=1)
+                y += LH + 0.5
+
+        y += 2  # visual gap before TAF
+
+        # TAF header
+        pdf.set_fill_color(*C_SEC)
+        pdf.set_font(font, "B", 8)
+        pdf.set_xy(x, y)
+        pdf.cell(cw, 5, "  TAF", border=1, fill=True)
+        y += 5
+
+        # TAF raw text — limit to 15 lines to avoid page overflow
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_font(font, "", 7.5)
+        pdf.set_xy(x, y)
+        if taf_raw:
+            lines = taf_raw.splitlines()
+            if len(lines) > 15:
+                lines = lines[:15] + ["[…]"]
+            display = "\n".join(lines)
+            pdf.multi_cell(cw, LH, display, border="LBR")
+            y = pdf.get_y()
+        else:
+            pdf.cell(cw, 7, "  Nicht verfügbar", border=1)
+            y += 7
+
+        final_ys.append(y)
+
+    # ── VFR assessment strip ──────────────────────────────────────────────────
+    assess_y = max(final_ys) + 4
+
+    pdf.set_fill_color(*C_SEC)
+    pdf.set_font(font, "B", 9)
+    pdf.set_xy(pdf.l_margin, assess_y)
+    pdf.cell(pw, 5.5, "  VFR-Beurteilung  ·  Meteorological go/no-go assessment", border=1, fill=True)
+    assess_y += 5.5
+
+    STATUS_COLORS = {"VFR": C_VFR, "MVFR": C_MVFR, "IFR": C_IFR}
+    STATUS_LABELS = {
+        "VFR":  "VFR  OK",
+        "MVFR": "MVFR  !",
+        "IFR":  "IFR  XX",
+    }
+    assess_rows = [
+        (briefing.dep_icao,  briefing.dep_metar),
+        (briefing.dest_icao, briefing.dest_metar),
+    ]
+    col_defs = [
+        ("Platz",   pw * 0.08),
+        ("Status",  pw * 0.10),
+        ("Wind",    pw * 0.18),
+        ("Sicht",   pw * 0.12),
+        ("Decke",   pw * 0.12),
+        ("QNH hPa", pw * 0.10),
+        ("Wetter",  pw * 0.30),
+    ]
+    # header row
+    pdf.set_fill_color(*C_SEC)
+    pdf.set_font(font, "B", 8)
+    pdf.set_xy(pdf.l_margin, assess_y)
+    for col_name, col_w in col_defs:
+        pdf.cell(col_w, 5, f" {col_name}", border=1, fill=True)
+    assess_y += 5
+
+    for icao, parsed in assess_rows:
+        status = parsed.vfr_status() if parsed else "—"
+        color  = STATUS_COLORS.get(status, (245, 245, 245))
+        pdf.set_fill_color(*color)
+        pdf.set_font(font, "B" if status in ("IFR", "MVFR") else "", 8)
+        pdf.set_xy(pdf.l_margin, assess_y)
+
+        if parsed:
+            if parsed.wind_kt is not None:
+                w = ("VRB" if parsed.wind_vrb else f"{parsed.wind_dir:03d}°") + f"/{parsed.wind_kt}kt"
+                if parsed.wind_gust_kt:
+                    w += f" G{parsed.wind_gust_kt}"
+            else:
+                w = "—"
+            vis_s  = "CAVOK" if parsed.cavok else (f"{parsed.vis_m} m" if parsed.vis_m else "—")
+            ceil_s = "CAVOK" if parsed.cavok else (f"{parsed.ceiling_ft} ft" if parsed.ceiling_ft else "—")
+            qnh_s  = str(parsed.qnh_hpa) if parsed.qnh_hpa else "—"
+            wx_s   = "  ".join(parsed.phenomena) if parsed.phenomena else "—"
+        else:
+            w = vis_s = ceil_s = qnh_s = wx_s = "—"
+            status = "—"
+
+        values = [icao, STATUS_LABELS.get(status, status), w, vis_s, ceil_s, qnh_s, wx_s]
+        for (_, col_w), val in zip(col_defs, values):
+            pdf.cell(col_w, 5.5, f" {val}", border=1, fill=True)
+        assess_y += 5.5
+
+    # VFR minimums note
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_xy(pdf.l_margin, assess_y + 1)
+    pdf.set_font(font, "I", 6.5)
+    pdf.cell(pw, 3.5,
+             "VFR: Decke ≥ 3000 ft + Sicht ≥ 5 km  ·  MVFR: Decke 1500–3000 ft oder Sicht 3–5 km  ·  "
+             "IFR: Decke < 1500 ft oder Sicht < 3 km  ·  Grenzwerte Deutschland TMZ/CTR: AIP ENR 1.2",
+             border=0, align="C")
+
+    # Radar strip (if online)
+    if radar_info:
+        radar_y = assess_y + 5.5
+        pdf.set_fill_color(*C_RADAR)
+        pdf.set_font(font, "B", 8)
+        pdf.set_xy(pdf.l_margin, radar_y)
+        pdf.cell(pw, 5,
+                 f"  En-route Radar:  {radar_info[0]}  ·  {radar_info[1]} MHz  (VATSIM live)",
+                 border=1, fill=True, align="L")
+
+    # Footer
+    pdf.set_y(pdf.h - pdf.b_margin - 4)
+    pdf.set_font(font, "I", 6)
+    pdf.cell(0, 3,
+             f"METAR/TAF via VATSIM weather proxy ({briefing.fetched_at}). "
+             "Nicht für echten Flugbetrieb — offizielle Briefing-Quellen (DWD, Autobrief) verwenden.",
+             align="C")
+
+
 # ------------------------- Navigraph Charts integration -------------------------
 
 def _decode_dms(token: str) -> tuple[float, float] | None:
@@ -1680,6 +1977,273 @@ def _wind_from_metar(metar: str) -> tuple[float, float] | None:
     return None
 
 
+# ------------------------- weather briefing -------------------------
+
+def fetch_taf(icao: str, timeout: float = 6.0) -> str | None:
+    """Fetch a raw TAF from VATSIM's TAF endpoint. Returns None on failure."""
+    url = VATSIM_TAF_URL.format(icao=icao.upper())
+    req = urllib.request.Request(url, headers={"User-Agent": VATSIM_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8").strip()
+            return text if text else None
+    except (urllib.error.URLError, TimeoutError):
+        return None
+
+
+@dataclass
+class ParsedMetar:
+    raw: str
+    wind_dir: int | None = None
+    wind_kt: int | None = None
+    wind_gust_kt: int | None = None
+    wind_vrb: bool = False
+    vis_m: int | None = None
+    cavok: bool = False
+    ceiling_ft: int | None = None   # lowest BKN or OVC layer
+    clouds: list = None             # type: ignore[assignment]
+    temp_c: float | None = None
+    dewpoint_c: float | None = None
+    qnh_hpa: int | None = None
+    phenomena: list = None          # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.clouds is None:
+            self.clouds = []
+        if self.phenomena is None:
+            self.phenomena = []
+
+    def vfr_status(self) -> str:
+        if self.cavok:
+            return "VFR"
+        vis  = self.vis_m      if self.vis_m      is not None else 9999
+        ceil = self.ceiling_ft if self.ceiling_ft is not None else 99999
+        if ceil < 1500 or vis < 3000:
+            return "IFR"
+        if ceil < 3000 or vis < 5000:
+            return "MVFR"
+        return "VFR"
+
+
+def _parse_temp(s: str) -> float:
+    return -float(s[1:]) if s.startswith("M") else float(s)
+
+
+def parse_metar(raw: str) -> ParsedMetar:
+    result = ParsedMetar(raw=raw)
+
+    # Wind
+    m = re.search(r"\b(VRB|\d{3})(\d{2,3})(?:G(\d{2,3}))?KT\b", raw)
+    if m:
+        if m.group(1) == "VRB":
+            result.wind_vrb = True
+        else:
+            result.wind_dir = int(m.group(1))
+        result.wind_kt = int(m.group(2))
+        if m.group(3):
+            result.wind_gust_kt = int(m.group(3))
+
+    # MPS fallback (convert to kt)
+    if result.wind_kt is None:
+        m = re.search(r"\b(VRB|\d{3})(\d{2,3})(?:G(\d{2,3}))?MPS\b", raw)
+        if m:
+            if m.group(1) == "VRB":
+                result.wind_vrb = True
+            else:
+                result.wind_dir = int(m.group(1))
+            result.wind_kt = int(round(float(m.group(2)) * 1.944))
+            if m.group(3):
+                result.wind_gust_kt = int(round(float(m.group(3)) * 1.944))
+
+    # CAVOK
+    if "CAVOK" in raw:
+        result.cavok = True
+        result.vis_m = 9999
+    else:
+        # Visibility: standalone 4-digit group or 9999
+        m = re.search(r"(?<!\d)(\d{4})(?!\d)", raw)
+        if m:
+            result.vis_m = int(m.group(1))
+        # Clouds
+        for cm in re.finditer(r"\b(FEW|SCT|BKN|OVC)(\d{3})(CB|TCU)?", raw):
+            height_ft = int(cm.group(2)) * 100
+            label = cm.group(1) + cm.group(2) + (cm.group(3) or "")
+            result.clouds.append(label)
+            if cm.group(1) in ("BKN", "OVC"):
+                if result.ceiling_ft is None or height_ft < result.ceiling_ft:
+                    result.ceiling_ft = height_ft
+
+    # Temp / Dewpoint
+    m = re.search(r"\b(M?\d{2})/(M?\d{2})\b", raw)
+    if m:
+        try:
+            result.temp_c = _parse_temp(m.group(1))
+            result.dewpoint_c = _parse_temp(m.group(2))
+        except ValueError:
+            pass
+
+    # QNH
+    m = re.search(r"\bQ(\d{4})\b", raw)
+    if m:
+        result.qnh_hpa = int(m.group(1))
+    else:
+        m = re.search(r"\bA(\d{4})\b", raw)
+        if m:
+            result.qnh_hpa = int(round(int(m.group(1)) * 0.338639))
+
+    # Significant weather phenomena
+    phenom_re = re.compile(
+        r"\b(\+|-|VC)?(?:MI|BC|PR|DR|BL|SH|TS|FZ)?"
+        r"(?:DZ|RA|SN|SG|IC|PL|GR|GS|UP|BR|FG|FU|VA|DU|SA|HZ|PO|SQ|FC|SS|DS)\b"
+    )
+    result.phenomena = [pm.group(0) for pm in phenom_re.finditer(raw)]
+
+    return result
+
+
+@dataclass
+class WeatherBriefing:
+    dep_icao: str
+    dest_icao: str
+    dep_metar_raw: str | None
+    dest_metar_raw: str | None
+    dep_taf_raw: str | None
+    dest_taf_raw: str | None
+    dep_metar: ParsedMetar | None
+    dest_metar: ParsedMetar | None
+    fetched_at: str
+
+
+def fetch_weather_briefing(dep_icao: str, dest_icao: str) -> WeatherBriefing:
+    fetched_at = datetime.now(timezone.utc).strftime("%H:%MZ")
+    dep_m  = fetch_metar(dep_icao)
+    dest_m = fetch_metar(dest_icao)
+    dep_t  = fetch_taf(dep_icao)
+    dest_t = fetch_taf(dest_icao)
+    return WeatherBriefing(
+        dep_icao=dep_icao.upper(),
+        dest_icao=dest_icao.upper(),
+        dep_metar_raw=dep_m,
+        dest_metar_raw=dest_m,
+        dep_taf_raw=dep_t,
+        dest_taf_raw=dest_t,
+        dep_metar=parse_metar(dep_m) if dep_m else None,
+        dest_metar=parse_metar(dest_m) if dest_m else None,
+        fetched_at=fetched_at,
+    )
+
+
+# ------------------------- ICAO FPL generator -------------------------
+
+def format_icao_fpl(
+    plan: Plan,
+    aircraft: dict,
+    legs: list[Leg],
+    eobt: str,          # HHMM UTC
+    pob: int,
+    equipment: str,     # e.g. "S/C" or "SDFG/EB1"
+    wake: str,          # L / M / H / J
+    alternate: str,     # ICAO or ""
+    pilot_name: str,    # surname for field 19C
+) -> str:
+    dep  = plan.waypoints[0]
+    dest = plan.waypoints[-1]
+    perf = aircraft.get("performance", {})
+    fuel = aircraft.get("fuel", {})
+
+    # icao_type overrides type for FPL purposes (e.g. "C172" not "C172S").
+    # type is kept as-is for PDF display.
+    ac_type = re.sub(r"[^A-Z0-9]", "", (aircraft.get("icao_type") or aircraft.get("type", "C172")).upper())[:10]
+    # Field 7: aircraft identification — strip hyphens, max 7 chars
+    reg = re.sub(r"[^A-Z0-9]", "", aircraft.get("registration", "NXXXX").upper())[:7]
+
+    tas = int(perf.get("tas_cruise", 110))
+
+    # Field 15 altitude: ICAO Axxx = altitude in hundreds of feet (e.g. A025 = 2500 ft).
+    # "VFR" alone is rejected by many parsers including my.vatsim.net.
+    alt_code = f"A{int(plan.cruise_alt_ft) // 100:03d}"
+
+    # Route: DCT between named intermediate waypoints only.
+    # Coordinate-format waypoints (e.g. 521430N0075330E from user-defined points
+    # in Little Navmap / Navigraph) break my.vatsim.net's route parser — drop them.
+    def _named(ident: str) -> bool:
+        return bool(ident) and not re.match(r"^\d{4,6}[NS]\d{5,7}[EW]$", ident)
+
+    intermediates = [wp.ident for wp in plan.waypoints[1:-1] if _named(wp.ident)]
+    if intermediates:
+        route_str = "DCT " + " DCT ".join(intermediates) + " DCT"
+    else:
+        route_str = "DCT"
+
+    # EET for field 16
+    total_min = int(round(sum(l.ete_min for l in legs)))
+    eet = f"{total_min // 60:02d}{total_min % 60:02d}"
+
+    # Field 16: destination + EET + optional alternate
+    f16 = f"{dest.ident}{eet}"
+    if alternate:
+        f16 += f" {alternate.upper()}"
+
+    # Field 18: other information
+    dof = datetime.now().strftime("%y%m%d")
+    f18 = f"DOF/{dof} REG/{reg}"
+
+    # Field 19: supplementary — endurance from usable fuel / cruise burn
+    capacity = fuel.get("capacity_usable_l", 0)
+    burn     = perf.get("fuel_burn_cruise_lph", 33)
+    end_min  = int((capacity / burn) * 60) if burn > 0 else 0
+    f19_parts = [
+        f"E/{end_min // 60:02d}{end_min % 60:02d}",
+        f"P/{pob:03d}",
+        "R/UV",
+        "S/-",
+        "J/-",
+    ]
+    if pilot_name:
+        f19_parts.append(f"C/{pilot_name.upper()}")
+
+    lines = [
+        f"(FPL-{reg}-VG",
+        f"-{ac_type}/{wake}-{equipment}",
+        f"-{dep.ident}{eobt}",
+        f"-N{tas:04d}{alt_code} {route_str}",
+        f"-{f16}",
+        f"-{f18}",
+        f"-{' '.join(f19_parts)})",
+    ]
+    return "\n".join(lines)
+
+
+def _ask_fpl_fields(B: str, C: str, G: str, DIM: str, R: str) -> dict | None:
+    """Interactively collect extra FPL fields. Returns a dict or None if declined."""
+    print(f"\n{B}{C}ICAO FPL  (für my.vatsim.net Import){R}")
+    if input("  → Generieren? [y/N]: ").strip().lower() not in ("y", "yes"):
+        return None
+
+    while True:
+        raw = input("  EOBT UTC (HHMM, z. B. 1030): ").strip()
+        if re.match(r"^\d{4}$", raw) and 0 <= int(raw[:2]) <= 23 and 0 <= int(raw[2:]) <= 59:
+            eobt = raw
+            break
+        print("  Format: HHMM  (z. B. 1030)")
+
+    raw = input("  POB  (Personen an Bord) [2]: ").strip() or "2"
+    pob = int(raw) if raw.isdigit() and int(raw) >= 1 else 2
+
+    equipment = (input("  Equipment-Code [SDFG/C]: ").strip() or "SDFG/C").upper()
+
+    raw = input("  Wake turbulence [L]: ").strip().upper() or "L"
+    wake = raw if raw in ("L", "M", "H", "J") else "L"
+
+    raw = input("  Ausweichflugplatz ICAO (Enter = keiner): ").strip().upper()
+    alternate = raw if re.match(r"^[A-Z]{4}$", raw) else ""
+
+    pilot_name = input("  Pilot Nachname (für Feld 19): ").strip()
+
+    return dict(eobt=eobt, pob=pob, equipment=equipment,
+                wake=wake, alternate=alternate, pilot_name=pilot_name)
+
+
 # ------------------------- interactive TUI -------------------------
 
 def _tui() -> argparse.Namespace:
@@ -1861,6 +2425,9 @@ def _tui() -> argparse.Namespace:
     raw = input(f"  → [{fms_default}]: ").strip().lower()
     fms = raw in ("y", "yes") or (not raw and xp_found)
 
+    # --- FPL ---
+    fpl_fields = _ask_fpl_fields(B, C, G, DIM, R)
+
     print()
 
     return argparse.Namespace(
@@ -1876,6 +2443,9 @@ def _tui() -> argparse.Namespace:
         registration=registration,
         cruise_alt=cruise_alt_ft,
         fms=fms,
+        fpl_fields=fpl_fields,
+        # CLI FPL args are absent in TUI mode; use None as sentinel
+        fpl_eobt=None,
     )
 
 
@@ -1906,6 +2476,20 @@ def main():
                     help="Override the cruise altitude from the flight plan (feet MSL, e.g. 3500).")
     ap.add_argument("--fms", action="store_true",
                     help="Write an X-Plane FMS flight plan to Output/FMS plans/ (or next to PDF if --xplane is unset).")
+    fpl_grp = ap.add_argument_group("ICAO FPL output  (my.vatsim.net import)")
+    fpl_grp.add_argument("--fpl-eobt", default=None, metavar="HHMM",
+                         help="Generate ICAO FPL with this EOBT (UTC), e.g. 1030. "
+                              "Omit remaining --fpl-* flags to be prompted interactively.")
+    fpl_grp.add_argument("--fpl-pob", type=int, default=2, metavar="N",
+                         help="Persons on board (default 2).")
+    fpl_grp.add_argument("--fpl-equipment", default="SDFG/C", metavar="CODE",
+                         help="Equipment/surveillance code, e.g. SDFG/C (default) or SG/S.")
+    fpl_grp.add_argument("--fpl-wake", default="L", choices=["L", "M", "H", "J"],
+                         help="Wake turbulence category (default L).")
+    fpl_grp.add_argument("--fpl-alternate", default="", metavar="ICAO",
+                         help="Alternate aerodrome ICAO (optional).")
+    fpl_grp.add_argument("--fpl-pilot", default="", metavar="NAME",
+                         help="Pilot surname for FPL field 19C.")
 
     if not sys.argv[1:]:
         args = _tui()
@@ -1935,10 +2519,16 @@ def main():
     wind = parse_wind(args.wind)
     magvar = parse_magvar(args.magvar)
 
+    fir_icaos = _german_firs_for_route(plan.waypoints)
+
     snapshot: VatsimSnapshot | None = None
+    briefing: WeatherBriefing | None = None
     if args.vatsim:
-        icaos = [plan.waypoints[0].ident, plan.waypoints[-1].ident]
-        snapshot = fetch_vatsim(icaos)
+        dep_icao  = plan.waypoints[0].ident
+        dest_icao = plan.waypoints[-1].ident
+        icaos     = [dep_icao, dest_icao]
+        all_icaos = icaos + [f for f in fir_icaos if f not in icaos]
+        snapshot  = fetch_vatsim(all_icaos)
         if snapshot is not None:
             for icao in icaos:
                 got = snapshot.frequencies.get(icao.upper(), {})
@@ -1946,6 +2536,17 @@ def main():
                     print(f"[vatsim] {icao}: " + ", ".join(f"{k}={v}" for k, v in got.items()))
                 else:
                     print(f"[vatsim] {icao}: no controllers online")
+            for fir in fir_icaos:
+                got = snapshot.frequencies.get(fir.upper(), {})
+                if got:
+                    print(f"[vatsim] {fir}: " + ", ".join(f"{k}={v}" for k, v in got.items()))
+                else:
+                    print(f"[vatsim] {fir}: no radar online")
+        print(f"[weather] fetching METAR/TAF for {dep_icao}, {dest_icao}…")
+        briefing = fetch_weather_briefing(dep_icao, dest_icao)
+        for icao, pm in [(dep_icao, briefing.dep_metar), (dest_icao, briefing.dest_metar)]:
+            if pm:
+                print(f"[weather] {icao}: {pm.vfr_status()}  ceiling={pm.ceiling_ft} ft  vis={pm.vis_m} m  QNH={pm.qnh_hpa}")
 
     tas = aircraft["performance"]["tas_cruise"]
     burn = aircraft["performance"]["fuel_burn_cruise_lph"]
@@ -1969,7 +2570,8 @@ def main():
 
     render(plan, aircraft, legs, wind, magvar, out,
            vatsim=snapshot, call_tower_nm=args.call_tower_nm,
-           dest_info=dest_info, source_note=source_note)
+           dest_info=dest_info, source_note=source_note,
+           fir_icaos=fir_icaos, weather=briefing)
     print(f"Wrote {out}")
     total_d = sum(l.distance_nm for l in legs)
     total_t = sum(l.ete_min for l in legs)
@@ -1986,6 +2588,43 @@ def main():
             fms_path = out.parent / fms_name
         write_fms(plan, fms_path)
         print(f"Wrote FMS  {fms_path}")
+
+    # ── ICAO FPL ─────────────────────────────────────────────────────────────
+    # Resolve FPL fields from TUI (args.fpl_fields) or from CLI (--fpl-eobt …).
+    fpl_fields: dict | None = getattr(args, "fpl_fields", None)
+    if fpl_fields is None and getattr(args, "fpl_eobt", None):
+        # CLI mode: --fpl-eobt was given; remaining fields from CLI args or defaults.
+        fpl_fields = dict(
+            eobt=args.fpl_eobt,
+            pob=args.fpl_pob,
+            equipment=args.fpl_equipment,
+            wake=args.fpl_wake,
+            alternate=args.fpl_alternate,
+            pilot_name=args.fpl_pilot,
+        )
+
+    if fpl_fields is not None:
+        import urllib.parse
+        B, C, DIM, R = "\033[1m", "\033[36m", "\033[2m", "\033[0m"
+        fpl_str = format_icao_fpl(plan, aircraft, legs, **fpl_fields)
+        sep = "─" * 62
+        print(f"\n{B}ICAO FPL{R}")
+        print(sep)
+        print(fpl_str)
+        print(sep)
+        fpl_path = out.with_suffix(".fpl")
+        fpl_path.write_text(fpl_str + "\n", encoding="utf-8")
+        print(f"{DIM}Saved:  {fpl_path}{R}")
+
+        # Build the my.vatsim.net direct-open URL (CRLF + quote_plus, matching
+        # the encoding the site uses in its own shareable links).
+        raw = urllib.parse.quote_plus(fpl_str.replace("\n", "\r\n"))
+        fpl_url = f"https://my.vatsim.net/pilots/flightplan/beta?raw={raw}"
+        print(f"\n{B}Prefile URL{R}  (öffnet Formular vorausgefüllt):")
+        print(fpl_url)
+        if sys.platform == "darwin":
+            subprocess.run(["open", fpl_url], check=False)
+        print()
 
     if sys.platform == "darwin":
         subprocess.run(["open", str(out)], check=False)

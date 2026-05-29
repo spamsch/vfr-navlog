@@ -1,0 +1,54 @@
+{
+  "_source": "Cessna 172S (Skyhawk SP, Lycoming IO-360-L2A). POH-typical planning values at 65% power. Verify against your serial number.",
+  "type": "C172S",
+  "icao_type": "C172",
+  "registration": "D-EXXX",
+
+  "units": {
+    "mass": "kg",
+    "fuel_volume": "L",
+    "distance": "NM",
+    "speed": "kt",
+    "arm": "in",
+    "moment": "kg_in"
+  },
+
+  "performance": {
+    "tas_cruise": 107,
+    "tas_climb": 80,
+    "tas_descent": 90,
+    "climb_rate_fpm": 730,
+    "descent_rate_fpm": 500,
+    "fuel_burn_cruise_lph": 33.3,
+    "fuel_burn_climb_lph": 45.0,
+    "fuel_burn_taxi_lph": 10.0
+  },
+
+  "fuel": {
+    "capacity_usable_l": 201,
+    "density_kg_per_l": 0.72,
+    "reserve_minutes": 30,
+    "taxi_minutes": 12,
+    "approach_minutes": 10,
+    "alternate_minutes": 0
+  },
+
+  "mass_balance": {
+    "empty_mass_kg": 767,
+    "mtow_kg": 1111,
+    "mlw_kg": 1111,
+    "_arm_units": "inches aft of datum (Cessna convention)",
+    "stations": [
+      { "name": "Schmierstoff",        "arm": 12.0,   "default_mass_kg": 5.4 },
+      { "name": "Sitzreihe 1 (vorn)",  "arm": 37.0,   "default_mass_kg": 85 },
+      { "name": "Sitzreihe 2 (hinten)","arm": 73.0,   "default_mass_kg": 0 },
+      { "name": "Gepaeck (hinten)",    "arm": 95.0,   "default_mass_kg": 0 },
+      { "name": "Kraftstoff",          "arm": 48.0,   "default_mass_kg": 100 }
+    ],
+    "cg_envelope": {
+      "_note": "Approximate C172S envelope, inches aft of datum. Replace with your POH values.",
+      "fwd_limit_in": 35.0,
+      "aft_limit_in": 47.3
+    }
+  }
+}
