@@ -1,16 +1,19 @@
 # vfr-navlog
 
-A Python script that turns a [Little Navmap](https://www.littlenavmap.org/) `.lnmpln` flight plan into a printable A4-landscape VFR navlog PDF, German LBA-style. Built for simulator use with X-Plane 12 and VATSIM, but the output is real-world readable.
+A Python script that turns a VFR flight plan into a printable A4-landscape navlog PDF, German LBA-style. Built for simulator use with X-Plane 12 and VATSIM, but the output is real-world readable.
 
-The `.lnmpln` format is Little Navmap's native flight-plan XML. You can build the plan in Little Navmap directly, or plan in **[Navigraph Charts](https://navigraph.com/products/charts)** and export (File → Export → Little Navmap) — same format either way.
+Two plan sources are supported:
+
+- **[Navigraph Charts](https://navigraph.com/products/charts)** — the primary source. With `--navigraph`, the script reads the active plan directly out of Navigraph Charts' local storage on macOS. No export, no file — just plan and run.
+- **[Little Navmap](https://www.littlenavmap.org/) `.lnmpln`** — pass the file with `--plan`. You can also plan in Navigraph Charts and export (File → Export → Little Navmap) to get this format.
 
 ![Navlog page 1](docs/screenshot-page1.png)
 
 ## Output
 
-Five pages:
+Five core pages, plus optional DFS airport chart pages appended at the end:
 
-1. **Navlog** — header strip, frequency block with live VATSIM frequencies (GND/TWR/ATIS + en-route radar), ATIS strip, leg-by-leg table (TC / MH / dist / GS / ETE / fuel), fuel summary, planning assumptions, tower-call marker.
+1. **Navlog** — header strip, frequency block with live VATSIM frequencies (GND/TWR/ATIS/DEL/APP + en-route radar), ATIS strip, leg-by-leg table (TC / MH / dist / GS / ETE / fuel), fuel summary, planning assumptions, tower-call marker.
 2. **FIS / Radar phraseology** — bilingual (DE/EN) dialogue cheat-sheet for the en-route FIS or radar contact. Adapts automatically: when Langen / Bremen / München Radar is online on VATSIM, the page title, note, and squawk guidance update to reflect radar service rather than basic FIS.
 3. **CTR phraseology** — the full inbound sequence at the destination: initial tower call, full position report with ATIS letter, CTR entry clearance via Whiskey, Whiskey call, downwind join, landing clearance, runway vacated, taxi to GA apron. Variations table covers holds outside the CTR, squawk assignments, and traffic sequencing.
 4. **Destination briefing** — airport data (elevation, TA/TL, IATA), runway table with ILS LOC frequencies from X-Plane's `earth_nav.dat`, communication frequencies, live VATSIM ATIS text.
@@ -18,10 +21,10 @@ Five pages:
 
 ## Install
 
-Python 3.10+ and [fpdf2](https://pypi.org/project/fpdf2/):
+Python 3.10+ and the required packages:
 
 ```
-pip install fpdf2
+pip install fpdf2 requests img2pdf Pillow
 ```
 
 On macOS the script registers `Arial.ttf` from `/System/Library/Fonts/Supplemental/` so umlauts render. On other platforms it falls back to core Helvetica.
@@ -51,8 +54,9 @@ The wizard asks for:
 5. Cruise altitude in ft MSL
 6. Magnetic variation
 7. Whether to fetch live VATSIM data (ATC frequencies + weather)
-8. Whether to write an X-Plane FMS file
-9. Whether to generate an ICAO FPL for VATSIM prefile — asks for EOBT, POB, equipment code, wake category, alternate, and pilot name, then opens `my.vatsim.net/pilots/flightplan/beta` pre-filled in your browser
+8. Whether to append DFS VFR charts for the destination
+9. Whether to write an X-Plane FMS file
+10. Whether to generate an ICAO FPL for VATSIM prefile — asks for EOBT, POB, equipment code, wake category, alternate, and pilot name, then opens `my.vatsim.net/pilots/flightplan/beta` pre-filled in your browser
 
 ## CLI
 
@@ -64,6 +68,7 @@ python3 navlog.py \
     --magvar 4E \
     --cruise-alt 2500 \
     --vatsim \
+    --dfs-charts \
     --fms \
     --fpl-eobt 1030 \
     --fpl-pob 2 \
@@ -75,14 +80,15 @@ python3 navlog.py \
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--plan` | — | Little Navmap `.lnmpln` file. Mutually exclusive with `--navigraph`. |
-| `--navigraph` | off | Read the active plan from Navigraph Charts (macOS). |
+| `--navigraph` | off | Read the active plan live from Navigraph Charts (macOS). |
 | `--aircraft` | required | JSON profile (see `aircraft_c172.json`). |
 | `--registration` | from JSON | Override the aircraft registration for this run. |
 | `--wind` | `0/0` | Wind aloft `DDD/SS`, e.g. `270/15`. Applied uniformly to every leg. |
 | `--cruise-alt` | from plan | Override cruise altitude (feet MSL). |
-| `--magvar` | `2.5E` | Magnetic variation. `4E`, `-3.5`, `2.5W` all work. |
+| `--magvar` | `4E` | Magnetic variation. `4E`, `-3.5`, `2.5W` all work. |
 | `--output` | auto | Output path. Defaults to `<dep>-<dest>/navlog_<date>_<type>.pdf`. |
 | `--vatsim` | off | Fetch live VATSIM data: ATC frequencies, en-route radar, METAR/TAF. |
+| `--dfs-charts` | off | Append VFR charts for the destination from the official DFS AIP. |
 | `--fms` | off | Write an X-Plane FMS v3 flight plan to `Output/FMS plans/`. |
 | `--call-tower-nm` | `10` | NM remaining threshold for the tower-call leg marker. `0` disables. |
 | `--xplane` | macOS Steam default | X-Plane 12 root. Pass `--xplane ""` to skip the destination-briefing page. |
@@ -92,6 +98,27 @@ python3 navlog.py \
 | `--fpl-wake` | `L` | Wake turbulence category (L / M / H / J). |
 | `--fpl-alternate` | — | Alternate aerodrome ICAO. |
 | `--fpl-pilot` | — | Pilot surname for FPL field 19C. |
+
+## DFS airport charts
+
+`dfs_charts.py` downloads VFR charts for any German airport from the official [DFS AIP](https://aip.dfs.de/) (Deutsche Flugsicherung), always at the current AIRAC cycle. No account or subscription needed.
+
+```
+python3 dfs_charts.py EDDV
+python3 dfs_charts.py EDLI --no-ifr-aerodrome
+python3 dfs_charts.py EDDV --out /tmp/charts
+```
+
+For each airport it fetches:
+
+- **BasicVFR section** — VFR approach and area charts (the CTR entry/exit procedures, local traffic patterns, VFR routes into the airport)
+- **BasicIFR aerodrome charts** — aerodrome chart (ICAO 2-5), ground movement charts (2-7, 2-7A), parking/docking chart (2-9), taxi restrictions (2-9A)
+
+Output: individually numbered PNGs in `<ICAO>/` plus a combined `<ICAO>/<ICAO>_vfr_charts.pdf`.
+
+When `--dfs-charts` is set (or selected in the TUI), `navlog.py` calls this logic internally and appends the chart pages to the navlog PDF. Each chart gets its own page, oriented portrait or landscape to match the source image.
+
+The chart data comes from `aip.aero` as the AIRAC-cycle discovery index and `aip.dfs.de` for the actual pages. Both are public. Charts are embedded as PNG in DFS's HTML — the script extracts and reassembles them; there are no PDF originals to download.
 
 ## VATSIM integration
 
@@ -188,6 +215,7 @@ Type codes: `1` = airport, `3` = VOR, `2` = NDB, `11` = intersection, `28` = use
 - No MORA lookup.
 - FIR detection for en-route radar is latitude-based only — coarse, works for German routes.
 - Phraseology pages are tailored to the EDLI→EDDG route (Bremen/Langen FIS, Whiskey VRP at EDDG). Adapt for other routes.
+- DFS chart download (`--dfs-charts`) only covers German airports (ED prefix). Non-German destinations are silently skipped.
 
 ## License
 

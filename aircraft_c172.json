@@ -2,7 +2,7 @@
   "_source": "Cessna 172S (Skyhawk SP, Lycoming IO-360-L2A). POH-typical planning values at 65% power. Verify against your serial number.",
   "type": "C172S",
   "icao_type": "C172",
-  "registration": "D-EXXX",
+  "registration": "D-EIYD",
 
   "units": {
     "mass": "kg",
@@ -14,7 +14,7 @@
   },
 
   "performance": {
-    "tas_cruise": 107,
+    "tas_cruise": 93,
     "tas_climb": 80,
     "tas_descent": 90,
     "climb_rate_fpm": 730,

@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fpdf import FPDF
+from io import BytesIO
 
 
 VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
@@ -545,7 +546,56 @@ def fmt_int(x: float, width: int = 0) -> str:
     return f"{int(round(x)):>{width}d}"
 
 
-def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0, dest_info: AirportInfo | None = None, source_note: str = "", fir_icaos: list[str] | None = None, weather: "WeatherBriefing | None" = None) -> None:
+def _append_dfs_charts(pdf: FPDF, icao: str) -> int:
+    """
+    Fetch VFR charts from the DFS AIP and append them as pages to *pdf*.
+    Returns the number of pages added. Gracefully skips on any failure.
+    """
+    try:
+        from dfs_charts import find_chapter_url, list_charts, extract_png
+    except ImportError:
+        print("[dfs] dfs_charts.py not found — skipping chart pages", file=sys.stderr)
+        return 0
+
+    from PIL import Image as PILImage
+
+    print(f"[dfs] Fetching VFR charts for {icao}…")
+    pngs: list[tuple[str, bytes]] = []
+
+    try:
+        vfr_url = find_chapter_url(icao, "vfr")
+        if vfr_url:
+            for title, page_url in list_charts(vfr_url, skip_junk=True):
+                png = extract_png(page_url)
+                if png:
+                    pngs.append((title, png))
+                    print(f"[dfs]   {title}")
+
+        ifr_url = find_chapter_url(icao, "ifr")
+        if ifr_url:
+            for title, page_url in list_charts(ifr_url, vfr_filter=True):
+                png = extract_png(page_url)
+                if png:
+                    pngs.append((title, png))
+                    print(f"[dfs]   {title}")
+    except Exception as exc:
+        print(f"[dfs] Chart fetch failed: {exc}", file=sys.stderr)
+        return 0
+
+    for _title, png_bytes in pngs:
+        img = PILImage.open(BytesIO(png_bytes))
+        w_px, h_px = img.size
+        pdf.add_page(orientation="L" if w_px > h_px else "P")
+        pdf.image(BytesIO(png_bytes), x=0, y=0, w=pdf.w, h=pdf.h)
+
+    if pngs:
+        print(f"[dfs] Added {len(pngs)} chart page(s)")
+    else:
+        print(f"[dfs] No VFR charts found for {icao}")
+    return len(pngs)
+
+
+def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0, dest_info: AirportInfo | None = None, source_note: str = "", fir_icaos: list[str] | None = None, weather: "WeatherBriefing | None" = None, dfs_charts: bool = False) -> None:
     pdf = NavlogPDF()
     font = install_fonts(pdf)
     pw = pdf.w - pdf.l_margin - pdf.r_margin
@@ -927,6 +977,9 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
 
     if weather is not None:
         render_weather_page(pdf, font, weather, fir_icaos=fir_icaos, vatsim=vatsim)
+
+    if dfs_charts:
+        _append_dfs_charts(pdf, destination.ident.upper())
 
     pdf.output(str(out))
 
@@ -2400,9 +2453,9 @@ def _tui() -> argparse.Namespace:
         print("  Enter a positive number in feet (e.g. 3500).")
 
     # --- Magnetic variation ---
-    h("Magnetic variation  (e.g. 2.5E, 1.0W, -2.5)")
+    h("Magnetic variation  (e.g. 4E, 1.0W, -2.5)")
     while True:
-        raw = input("  → [2.5E]: ").strip() or "2.5E"
+        raw = input("  → [4E]: ").strip() or "4E"
         if re.match(r"^[+-]?\d+(\.\d+)?[EWew]?$", raw.strip()):
             magvar_str = raw
             break
@@ -2411,6 +2464,11 @@ def _tui() -> argparse.Namespace:
     # --- VATSIM ---
     h("VATSIM  (fetch live ATC frequencies?)")
     vatsim = input("  → [y/N]: ").strip().lower() in ("y", "yes")
+
+    # --- DFS charts ---
+    h("DFS airport charts  (append VFR charts for destination?)")
+    raw = input("  → [Y/n]: ").strip().lower()
+    dfs_charts = raw not in ("n", "no")
 
     # --- FMS ---
     h("X-Plane FMS export")
@@ -2438,6 +2496,7 @@ def _tui() -> argparse.Namespace:
         magvar=magvar_str,
         output=None,
         vatsim=vatsim,
+        dfs_charts=dfs_charts,
         call_tower_nm=10.0,
         xplane=DEFAULT_XPLANE,
         registration=registration,
@@ -2461,7 +2520,7 @@ def main():
                      help="Read the active flight plan directly from Navigraph Charts (macOS).")
     ap.add_argument("--aircraft", required=True, type=Path)
     ap.add_argument("--wind", default="0/0", help="Wind aloft, DDD/SS, e.g. 270/15")
-    ap.add_argument("--magvar", default="2.5E", help="Magnetic variation, e.g. 2.5E or -2.5")
+    ap.add_argument("--magvar", default="4E", help="Magnetic variation, e.g. 4E or -2.5")
     ap.add_argument("--output", default=None, type=Path)
     ap.add_argument("--vatsim", action="store_true",
                     help="Fetch live ATC frequencies from VATSIM for departure and destination.")
@@ -2476,6 +2535,8 @@ def main():
                     help="Override the cruise altitude from the flight plan (feet MSL, e.g. 3500).")
     ap.add_argument("--fms", action="store_true",
                     help="Write an X-Plane FMS flight plan to Output/FMS plans/ (or next to PDF if --xplane is unset).")
+    ap.add_argument("--dfs-charts", action="store_true", default=False,
+                    help="Append VFR charts for the destination from the DFS AIP.")
     fpl_grp = ap.add_argument_group("ICAO FPL output  (my.vatsim.net import)")
     fpl_grp.add_argument("--fpl-eobt", default=None, metavar="HHMM",
                          help="Generate ICAO FPL with this EOBT (UTC), e.g. 1030. "
@@ -2571,7 +2632,8 @@ def main():
     render(plan, aircraft, legs, wind, magvar, out,
            vatsim=snapshot, call_tower_nm=args.call_tower_nm,
            dest_info=dest_info, source_note=source_note,
-           fir_icaos=fir_icaos, weather=briefing)
+           fir_icaos=fir_icaos, weather=briefing,
+           dfs_charts=getattr(args, "dfs_charts", False))
     print(f"Wrote {out}")
     total_d = sum(l.distance_nm for l in legs)
     total_t = sum(l.ete_min for l in legs)
