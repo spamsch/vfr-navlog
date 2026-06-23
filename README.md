@@ -54,9 +54,10 @@ The wizard asks for:
 5. Cruise altitude in ft MSL
 6. Magnetic variation
 7. Whether to fetch live VATSIM data (ATC frequencies + weather)
-8. Whether to append DFS VFR charts for the destination
-9. Whether to write an X-Plane FMS file
-10. Whether to generate an ICAO FPL for VATSIM prefile — asks for EOBT, POB, equipment code, wake category, alternate, and pilot name, then opens `my.vatsim.net/pilots/flightplan/beta` pre-filled in your browser
+8. Whether to add a VOR reference per waypoint — if yes, it walks every waypoint and asks for free text (e.g. `233 FROM`), which prints in the navlog's VOR column. Press Enter to leave a waypoint blank.
+9. Whether to append DFS VFR charts for the destination
+10. Whether to write an X-Plane FMS file
+11. Whether to generate an ICAO FPL for VATSIM prefile — asks for EOBT, POB, equipment code, wake category, alternate, and pilot name, then opens `my.vatsim.net/pilots/flightplan/beta` pre-filled in your browser
 
 ## CLI
 
@@ -89,6 +90,7 @@ python3 navlog.py \
 | `--output` | auto | Output path. Defaults to `<dep>-<dest>/navlog_<date>_<type>.pdf`. |
 | `--vatsim` | off | Fetch live VATSIM data: ATC frequencies, en-route radar, METAR/TAF. |
 | `--dfs-charts` | off | Append VFR charts for the destination from the official DFS AIP. |
+| `--vor-info` | off | Prompt for a free-text VOR reference (e.g. `233 FROM`) per waypoint; prints in the VOR column. |
 | `--fms` | off | Write an X-Plane FMS v3 flight plan to `Output/FMS plans/`. |
 | `--call-tower-nm` | `10` | NM remaining threshold for the tower-call leg marker. `0` disables. |
 | `--xplane` | macOS Steam default | X-Plane 12 root. Pass `--xplane ""` to skip the destination-briefing page. |

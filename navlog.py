@@ -25,7 +25,7 @@ import sys
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -123,6 +123,7 @@ class Waypoint:
     alt_ft: float | None = None
     region: str | None = None
     freq: str | None = None
+    vor_info: str | None = None  # free-text VOR/navaid reference, e.g. "233 FROM"
 
 
 @dataclass
@@ -132,6 +133,9 @@ class Plan:
     flightplan_type: str
     cycle: str
     created: str
+    # Optional step-altitude profile: list of (waypoint_ident, alt_ft) pairs in route order.
+    # Each entry means "from this waypoint onwards, cruise at alt_ft."
+    alt_profile: list[tuple[str, float]] = field(default_factory=list)
 
 
 def parse_lnmpln(path: Path) -> Plan:
@@ -523,6 +527,24 @@ def compute_legs(plan: Plan, tas: float, wind: tuple[float, float], magvar: floa
     return legs
 
 
+def _effective_leg_alt(plan: Plan, wp_idx: int) -> float:
+    """Cruising altitude for the leg departing from plan.waypoints[wp_idx].
+
+    Walks the alt_profile in route order and returns the last altitude change
+    at or before wp_idx. Falls back to plan.cruise_alt_ft if no profile entry
+    has been reached yet.
+    """
+    if not plan.alt_profile:
+        return plan.cruise_alt_ft
+    alt = plan.cruise_alt_ft
+    for j in range(wp_idx + 1):
+        ident = plan.waypoints[j].ident.upper()
+        for pid, palt in plan.alt_profile:
+            if pid.upper() == ident:
+                alt = palt
+    return alt
+
+
 # ------------------------- PDF -------------------------
 
 class NavlogPDF(FPDF):
@@ -595,7 +617,7 @@ def _append_dfs_charts(pdf: FPDF, icao: str) -> int:
     return len(pngs)
 
 
-def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0, dest_info: AirportInfo | None = None, source_note: str = "", fir_icaos: list[str] | None = None, weather: "WeatherBriefing | None" = None, dfs_charts: bool = False) -> None:
+def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float], magvar: float, out: Path, vatsim: VatsimSnapshot | None = None, call_tower_nm: float = 10.0, dest_info: AirportInfo | None = None, source_note: str = "", fir_icaos: list[str] | None = None, weather: "WeatherBriefing | None" = None, dfs_charts: bool = False, field_wx: "dict[str, FieldWx] | None" = None) -> None:
     pdf = NavlogPDF()
     font = install_fonts(pdf)
     pw = pdf.w - pdf.l_margin - pdf.r_margin
@@ -759,12 +781,42 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
     for label, w in atis_cols:
         pdf.cell(w, atis_header_h, " " + label, border="LTR")
     atis_rows = [departure.ident or "Abflug", destination.ident or "Ziel", "Ausweich"]
+    # Vorbefüllung Abflug/Ziel aus VATSIM-ATIS bzw. echtem METAR; Ausweich bleibt leer.
+    wx_by_row = [
+        (field_wx or {}).get(departure.ident.upper()) if departure.ident else None,
+        (field_wx or {}).get(destination.ident.upper()) if destination.ident else None,
+        None,
+    ]
+    fetched_at = weather.fetched_at if weather else ""
+
+    def _atis_cell_values(label: str, wx: "FieldWx | None") -> list[str]:
+        # Reihenfolge: Platz, Code, RWY, TL/FL, Zeit UTC, Wind, Sicht, Wolken, T/Td, QNH, Bemerkung
+        if wx is None:
+            return [" " + label] + [""] * (len(atis_cols) - 1)
+        pm = wx.parsed
+        zeit = wx.time_z or (fetched_at if wx.source.startswith("METAR") else "")
+        return [
+            " " + label,
+            wx.atis_code or "",
+            wx.rwy or "",
+            "",                                  # TL/FL – nicht aus dem Wetter
+            zeit,
+            _wx_wind_cell(pm),
+            "",                                  # Sicht – nur Wind/Temp/Druck
+            "",                                  # Wolken – dito
+            _wx_ttd_cell(pm),
+            str(pm.qnh_hpa) if pm.qnh_hpa is not None else "",
+            wx.source,
+        ]
+
     pdf.set_font(font, "", 7)
     for ri, label in enumerate(atis_rows):
         ry = y2 + atis_header_h + ri * atis_row_h
         pdf.set_xy(pdf.l_margin, ry)
+        values = _atis_cell_values(label, wx_by_row[ri])
         for ci, (_, w) in enumerate(atis_cols):
-            text = " " + label if ci == 0 else ""
+            cell = values[ci]
+            text = (" " + cell) if cell else ""
             pdf.cell(w, atis_row_h, text, border=1)
     atis_h = atis_header_h + len(atis_rows) * atis_row_h
 
@@ -772,7 +824,7 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
     nav_y = y2 + atis_h + 3
     columns = [
         ("Waypoint",        56, "L"),
-        ("VOR/NDB",         18, "C"),
+        ("VOR\nInfo",       24, "C"),
         ("Alt\nft",         12, "C"),
         ("TAS\nkt",         12, "C"),
         ("Wind\n°/kt",      16, "C"),
@@ -797,30 +849,54 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
     highlight = {"TC\n°", "MH\n°", "Dist\nNM", "ETE\nmin", "GS\nkt"}
 
     header_h = 8
-    cx = pdf.l_margin
-    for name, w, _ in columns:
-        pdf.set_xy(cx, nav_y)
-        if name in highlight:
-            pdf.set_font(font, "B", 9)
-        else:
-            pdf.set_font(font, "B", 7)
-        pdf.multi_cell(w, header_h / 2, name, border=1, align="C")
-        cx += w
-
     row_h = 6.5
+    _note_text = (
+        source_note
+        or "Erzeugt aus Little Navmap .lnmpln — Werte ohne Gewähr. "
+           "Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
+    )
+    # Reserve space at the bottom of each table page for the footer line.
+    usable_bottom = pdf.h - pdf.b_margin - 7
+
+    def _draw_nav_header(at_y: float) -> None:
+        cx = pdf.l_margin
+        for col_name, col_w, _ in columns:
+            pdf.set_xy(cx, at_y)
+            if col_name in highlight:
+                pdf.set_font(font, "B", 9)
+            else:
+                pdf.set_font(font, "B", 7)
+            pdf.multi_cell(col_w, header_h / 2, col_name, border=1, align="C")
+            cx += col_w
+
+    _draw_nav_header(nav_y)
+    current_y = nav_y + header_h
+
     n_rows = max(len(plan.waypoints), 10)
     cum_dist = 0.0
     cum_ete = 0.0
     cum_fuel = 0.0
     for i in range(n_rows):
-        ry = nav_y + header_h + i * row_h
+        if current_y + row_h > usable_bottom:
+            if i >= len(plan.waypoints):
+                break  # trailing empty rows: don't overflow to a new page
+            # Draw footer on the current page, then continue on a fresh one.
+            pdf.set_xy(pdf.l_margin, pdf.h - pdf.b_margin - 4)
+            pdf.set_font(font, "I", 6)
+            pdf.cell(0, 3, _note_text, align="C")
+            pdf.add_page()
+            current_y = pdf.t_margin
+            _draw_nav_header(current_y)
+            current_y += header_h
+
+        ry = current_y
         pdf.set_fill_color(245, 245, 245) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
 
         if i == 0:
             wp = plan.waypoints[0]
             row = [
                 f"{wp.ident}  {wp.name}",
-                wp.freq or "",
+                wp.vor_info or wp.freq or "",
                 fmt_int(wp.alt_ft or 0) if wp.alt_ft else "",
                 "", "", "", "", "", "",
                 "", "", "", "", "", "", "",
@@ -834,8 +910,8 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
             first_leg = (i == 1)
             row = [
                 f"{wp.ident}  {wp.name}",
-                wp.freq or "",
-                fmt_int(plan.cruise_alt_ft) if i < len(plan.waypoints) - 1 else fmt_int(wp.alt_ft or 0),
+                wp.vor_info or wp.freq or "",
+                fmt_int(_effective_leg_alt(plan, i)) if i < len(plan.waypoints) - 1 else fmt_int(wp.alt_ft or 0),
                 fmt_int(perf.get("tas_cruise", 0)) if first_leg else "",
                 f"{int(wind[0]):03d}/{int(wind[1]):02d}" if first_leg else "",
                 fmt_int(leg.tc),
@@ -874,6 +950,8 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
                 pdf.cell(w, row_h, " " + str(val) if val else "", border=1, align=align, fill=True)
             cx += w
 
+        current_y += row_h
+
     # ---------- fuel summary ----------
     fuel = aircraft.get("fuel", {})
     burn = perf.get("fuel_burn_cruise_lph", 60)
@@ -888,7 +966,16 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
     trip_l = cum_fuel
     min_required = taxi_l + climb_l + trip_l + approach_l + alternate_l + reserve_l
 
-    fuel_y = nav_y + header_h + n_rows * row_h + 4
+    # If the summary block won't fit on the current page, start a fresh one.
+    SUMMARY_H = 65  # conservative: fuel header + 10 lines + signature rect
+    if current_y + 4 + SUMMARY_H > usable_bottom:
+        pdf.set_xy(pdf.l_margin, pdf.h - pdf.b_margin - 4)
+        pdf.set_font(font, "I", 6)
+        pdf.cell(0, 3, _note_text, align="C")
+        pdf.add_page()
+        fuel_y = pdf.t_margin + 2
+    else:
+        fuel_y = current_y + 4
     fuel_x = pdf.l_margin
     fuel_w = 95
     pdf.set_xy(fuel_x, fuel_y)
@@ -964,11 +1051,10 @@ def render(plan: Plan, aircraft: dict, legs: list[Leg], wind: tuple[float, float
     pdf.cell(sig_w, 5, " Bemerkungen / Unterschrift Pilot", border=1)
     pdf.rect(sig_x, foot_y + 5, sig_w, 45)
 
-    # bottom note
+    # bottom note on the final navlog page
     pdf.set_xy(pdf.l_margin, pdf.h - pdf.b_margin - 4)
     pdf.set_font(font, "I", 6)
-    note = source_note or "Erzeugt aus Little Navmap .lnmpln — Werte ohne Gewähr. Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
-    pdf.cell(0, 3, note, align="C")
+    pdf.cell(0, 3, _note_text, align="C")
 
     render_phraseology(pdf, font, plan, aircraft, vatsim, fir_icaos or [])
 
@@ -1771,9 +1857,13 @@ def _airport_position(apt_path: Path, icao: str) -> tuple[float, float] | None:
     return sum(lats) / len(lats), sum(lons) / len(lons)
 
 
-def _build_nav_index(xplane_path: Path, idents: set[str]) -> dict[str, tuple[float, float, str]]:
-    """Resolve navaid/fix idents to (lat, lon, freq_str) from X-Plane's nav and fix databases."""
-    result: dict[str, tuple[float, float, str]] = {}
+def _build_nav_index(xplane_path: Path, idents: set[str]) -> dict[str, list[tuple[float, float, str]]]:
+    """Resolve navaid/fix idents to all (lat, lon, freq_str) candidates from X-Plane's nav and fix databases.
+
+    Returns a list of candidates per ident so the caller can pick the geographically nearest one
+    when the same ident exists in multiple countries (e.g. VOR WLD).
+    """
+    result: dict[str, list[tuple[float, float, str]]] = {ident: [] for ident in idents}
     if not idents:
         return result
 
@@ -1789,7 +1879,7 @@ def _build_nav_index(xplane_path: Path, idents: set[str]) -> dict[str, tuple[flo
                     if len(parts) < 9 or parts[0] not in {"2", "3"}:
                         continue
                     ident = parts[7]
-                    if ident in idents and ident not in result:
+                    if ident in idents:
                         try:
                             lat, lon = float(parts[1]), float(parts[2])
                             raw_freq = int(parts[4])
@@ -1797,14 +1887,14 @@ def _build_nav_index(xplane_path: Path, idents: set[str]) -> dict[str, tuple[flo
                                 freq_str = f"{raw_freq / 100:.2f}"
                             else:
                                 freq_str = str(raw_freq)
-                            result[ident] = (lat, lon, freq_str)
+                            result[ident].append((lat, lon, freq_str))
                         except ValueError:
                             pass
         except OSError:
             pass
 
     # earth_fix.dat — named waypoints/intersections (no frequency)
-    remaining = idents - set(result)
+    remaining = {ident for ident, candidates in result.items() if not candidates}
     if remaining:
         fix_path = xplane_path / FIX_REL
         if fix_path.exists():
@@ -1815,9 +1905,9 @@ def _build_nav_index(xplane_path: Path, idents: set[str]) -> dict[str, tuple[flo
                         if len(parts) < 3:
                             continue
                         ident = parts[2]
-                        if ident in remaining and ident not in result:
+                        if ident in remaining:
                             try:
-                                result[ident] = (float(parts[0]), float(parts[1]), "")
+                                result[ident].append((float(parts[0]), float(parts[1]), ""))
                             except ValueError:
                                 pass
             except OSError:
@@ -1853,7 +1943,7 @@ def _navigraph_plan(data: dict, xplane_path: Path | None) -> Plan:
     named_idents: set[str] = {t for t in tokens if _decode_dms(t) is None}
 
     apt_pos: dict[str, tuple[float, float, str]] = {}
-    nav_pos: dict[str, tuple[float, float, str]] = {}
+    nav_candidates: dict[str, list[tuple[float, float, str]]] = {}
 
     if xplane_path:
         apt_path = xplane_path / APT_REL
@@ -1863,7 +1953,33 @@ def _navigraph_plan(data: dict, xplane_path: Path | None) -> Plan:
                 apt_pos[ident] = (p[0], p[1], "")
         unresolved = named_idents - set(apt_pos)
         if unresolved:
-            nav_pos = _build_nav_index(xplane_path, unresolved)
+            nav_candidates = _build_nav_index(xplane_path, unresolved)
+
+    # Compute route centroid from inline DMS coordinates and resolved airports so we can
+    # pick the geographically nearest candidate when a navaid ident appears in multiple countries.
+    ref_coords: list[tuple[float, float]] = [c for t in tokens if (c := _decode_dms(t)) is not None]
+    ref_coords += [(p[0], p[1]) for p in apt_pos.values()]
+    if ref_coords:
+        ref_lat = sum(c[0] for c in ref_coords) / len(ref_coords)
+        ref_lon = sum(c[1] for c in ref_coords) / len(ref_coords)
+    else:
+        ref_lat, ref_lon = 0.0, 0.0
+
+    nav_pos: dict[str, tuple[float, float, str]] = {}
+    for ident, candidates in nav_candidates.items():
+        if not candidates:
+            continue
+        if len(candidates) == 1:
+            nav_pos[ident] = candidates[0]
+        else:
+            nav_pos[ident] = min(candidates, key=lambda c: _haversine_m(c[0], c[1], ref_lat, ref_lon))
+            chosen = nav_pos[ident]
+            print(
+                f"[navigraph] {ident}: {len(candidates)} candidates in nav db — "
+                f"picked ({chosen[0]:.2f}, {chosen[1]:.2f}), nearest to route centroid "
+                f"({ref_lat:.2f}, {ref_lon:.2f})",
+                file=sys.stderr,
+            )
 
     all_pos = {**apt_pos, **nav_pos}
 
@@ -1963,7 +2079,7 @@ def write_fms(plan: Plan, out_path: Path) -> None:
     for i, wp in enumerate(plan.waypoints):
         type_code = type_map.get((wp.type or "").upper(), 28)
         ident = (wp.ident or "UNKN")[:5]
-        alt = 0.0 if (i == 0 or i == n - 1) else float(plan.cruise_alt_ft)
+        alt = 0.0 if (i == 0 or i == n - 1) else _effective_leg_alt(plan, i)
         lines.append(f"{type_code} {ident} {alt:.6f} {wp.lat:.6f} {wp.lon:.6f}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -2186,6 +2302,182 @@ def fetch_weather_briefing(dep_icao: str, dest_icao: str) -> WeatherBriefing:
     )
 
 
+# ------------------------- field weather (ATIS / METAR) -------------------------
+#
+# Quelle pro Platz: zuerst der VATSIM-ATIS-Text der online ATIS-Station (falls
+# vorhanden und parsebar), sonst echtes METAR als Fallback. Der Fallback liefert
+# bewusst nur Wind, Temperatur und Druck – Sicht/Wolken bleiben leer.
+
+@dataclass
+class FieldWx:
+    icao: str
+    source: str               # "VATSIM ATIS" oder "METAR (real)"
+    parsed: ParsedMetar       # Wind / Temp / QNH
+    atis_code: str | None = None
+    rwy: str | None = None
+    time_z: str | None = None
+
+
+def parse_atis(lines: list[str]) -> ParsedMetar:
+    """Extrahiert Wind, Temperatur und QNH aus dem freien VATSIM-ATIS-Text.
+
+    ATIS-Text variiert stark je vACC. Strategie: erst nach eingebetteten
+    METAR-Gruppen suchen (viele vACCs hängen das rohe METAR an), dann nach der
+    ausgeschriebenen ATIS-Sprache (WIND 250 DEG 8 KT, QNH 1018, TEMP 14 DP 09).
+    Sicht/Wolken werden bewusst nicht geparst – der ATIS-Fließtext ist dafür zu
+    uneinheitlich, und gefragt sind nur Wind/Temp/Druck.
+    """
+    text = " ".join(lines).upper()
+    pm = ParsedMetar(raw=text)
+
+    # --- Wind: erst METAR-Gruppe (dddssKT / dddssMPS / VRBssKT), dann verbose ---
+    m = re.search(r"\b(VRB|\d{3})(\d{2,3})(?:G(\d{2,3}))?(KT|MPS)\b", text)
+    if m:
+        kt = int(m.group(2))
+        gust = int(m.group(3)) if m.group(3) else None
+        if m.group(4) == "MPS":
+            kt = int(round(kt * 1.944))
+            gust = int(round(gust * 1.944)) if gust else None
+        pm.wind_kt = kt
+        pm.wind_gust_kt = gust
+        if m.group(1) == "VRB":
+            pm.wind_vrb = True
+        else:
+            pm.wind_dir = int(m.group(1)) % 360
+    else:
+        m = re.search(r"\bWIND\b[^0-9]{0,8}(\d{3})[^0-9]{0,10}?(\d{1,3})\s*(?:KT|KNOT)", text)
+        if m:
+            pm.wind_dir = int(m.group(1)) % 360
+            pm.wind_kt = int(m.group(2))
+        else:
+            m = re.search(r"\bWIND\b[^0-9]{0,4}(?:VRB|VARIABLE)[^0-9]{0,8}(\d{1,3})\s*(?:KT|KNOT)", text)
+            if m:
+                pm.wind_vrb = True
+                pm.wind_kt = int(m.group(1))
+        if pm.wind_kt is not None:
+            g = re.search(r"\b(?:GUST\w*|MAX(?:IMUM)?)[^0-9]{0,6}(\d{1,3})", text)
+            if g:
+                pm.wind_gust_kt = int(g.group(1))
+
+    # --- QNH: METAR-Gruppe (Qdddd / Adddd) oder verbose (QNH 1018) ---
+    m = re.search(r"\bQ(\d{4})\b", text)
+    if m:
+        pm.qnh_hpa = int(m.group(1))
+    else:
+        m = re.search(r"\bQNH\b[^0-9]{0,6}(\d{3,4})", text)
+        if m:
+            pm.qnh_hpa = int(m.group(1))
+        else:
+            m = re.search(r"\bA(\d{4})\b", text)   # inHg → hPa
+            if m:
+                pm.qnh_hpa = int(round(int(m.group(1)) * 0.338639))
+
+    # --- Temp / Taupunkt: METAR-Gruppe (tt/dd) oder verbose (TEMP 14 DP 09) ---
+    m = re.search(r"\b(M?\d{2})/(M?\d{2})\b", text)
+    if m:
+        try:
+            pm.temp_c = _parse_temp(m.group(1))
+            pm.dewpoint_c = _parse_temp(m.group(2))
+        except ValueError:
+            pass
+    if pm.temp_c is None:
+        m = re.search(r"\bTEMP\w*[^0-9M]{0,4}(M?\d{1,2}).{0,14}?(?:DEW\w*|DP|DEWPOINT)[^0-9M]{0,4}(M?\d{1,2})", text)
+        if m:
+            try:
+                pm.temp_c = _parse_temp(m.group(1))
+                pm.dewpoint_c = _parse_temp(m.group(2))
+            except ValueError:
+                pass
+        else:
+            m = re.search(r"\bTEMP\w*[^0-9M]{0,4}(M?\d{1,2})", text)
+            if m:
+                try:
+                    pm.temp_c = _parse_temp(m.group(1))
+                except ValueError:
+                    pass
+
+    return pm
+
+
+def _atis_meta(lines: list[str]) -> dict:
+    """ATIS-Kennung (Buchstabe), aktive RWY und Beobachtungszeit aus dem Text."""
+    text = " ".join(lines).upper()
+    meta: dict = {}
+    m = (re.search(r"\bATIS\b(?:\s+\w+)?\s+(?:INFO\w*\s+)?([A-Z])\b", text)
+         or re.search(r"\bINFORMATION\s+([A-Z])", text))
+    if m:
+        meta["atis_code"] = m.group(1)
+    m = re.search(r"\bRWY?\s*(\d{2}[LRC]?)", text)
+    if m:
+        meta["rwy"] = m.group(1)
+    m = re.search(r"\b(\d{4})Z\b", text)
+    if m:
+        meta["time_z"] = m.group(1) + "Z"
+    return meta
+
+
+def field_weather(icao: str, vatsim: "VatsimSnapshot | None",
+                  briefing: "WeatherBriefing | None") -> FieldWx | None:
+    """Wetter für einen Platz: VATSIM-ATIS bevorzugt, sonst echtes METAR.
+
+    Fällt auf METAR zurück, wenn keine ATIS-Station online ist *oder* der
+    ATIS-Text keinen Wind/Temp/QNH hergibt. Der METAR-Fallback wird auf
+    Wind/Temp/Druck beschränkt (Sicht/Wolken bleiben leer).
+    """
+    icao = icao.upper()
+
+    # 1) VATSIM ATIS
+    lines = vatsim.atis_text.get(icao) if vatsim else None
+    if lines:
+        pm = parse_atis(lines)
+        if pm.wind_kt is not None or pm.qnh_hpa is not None or pm.temp_c is not None:
+            return FieldWx(icao, "VATSIM ATIS", pm, **_atis_meta(lines))
+
+    # 2) Echtes METAR (aus dem bereits geholten Briefing, sonst nachladen)
+    pm = None
+    if briefing:
+        if icao == briefing.dep_icao:
+            pm = briefing.dep_metar
+        elif icao == briefing.dest_icao:
+            pm = briefing.dest_metar
+    if pm is None:
+        raw = fetch_metar(icao)
+        pm = parse_metar(raw) if raw else None
+    if pm is not None:
+        # nur Wind/Temp/Druck verwenden
+        slim = ParsedMetar(
+            raw=pm.raw,
+            wind_dir=pm.wind_dir, wind_kt=pm.wind_kt,
+            wind_gust_kt=pm.wind_gust_kt, wind_vrb=pm.wind_vrb,
+            temp_c=pm.temp_c, dewpoint_c=pm.dewpoint_c, qnh_hpa=pm.qnh_hpa,
+        )
+        return FieldWx(icao, "METAR (real)", slim)
+
+    return None
+
+
+def _wx_wind_cell(pm: ParsedMetar) -> str:
+    if pm.wind_kt is None:
+        return ""
+    if pm.wind_vrb or pm.wind_dir is None:
+        head = "VRB"
+    else:
+        head = f"{pm.wind_dir:03d}"
+    s = f"{head}/{pm.wind_kt:02d}"
+    if pm.wind_gust_kt:
+        s += f"G{pm.wind_gust_kt}"
+    return s
+
+
+def _wx_ttd_cell(pm: ParsedMetar) -> str:
+    if pm.temp_c is None:
+        return ""
+    s = f"{int(round(pm.temp_c))}"
+    if pm.dewpoint_c is not None:
+        s += f"/{int(round(pm.dewpoint_c))}"
+    return s
+
+
 # ------------------------- ICAO FPL generator -------------------------
 
 def format_icao_fpl(
@@ -2297,6 +2589,27 @@ def _ask_fpl_fields(B: str, C: str, G: str, DIM: str, R: str) -> dict | None:
                 wake=wake, alternate=alternate, pilot_name=pilot_name)
 
 
+def collect_vor_info(plan: Plan) -> None:
+    """Walk every waypoint and attach a free-text VOR/navaid reference
+    (e.g. "233 FROM"). Mutates plan.waypoints in place.
+
+    Called only when the user opted in. Skips silently when stdin is not a
+    TTY so non-interactive runs (cron, pipes) never block on input().
+    """
+    if not sys.stdin.isatty():
+        return
+    B, C, G, DIM, R = "\033[1m", "\033[36m", "\033[32m", "\033[2m", "\033[0m"
+    print(f"\n{B}{C}VOR-Informationen je Wegpunkt{R}")
+    print(f"{DIM}Freitext pro Wegpunkt, z. B. \"233 FROM\" oder \"FRD R088\". "
+          f"Enter lässt einen Punkt leer.{R}")
+    for wp in plan.waypoints:
+        label = f"{wp.ident}  {wp.name}".strip() or wp.ident or "(unbenannt)"
+        current = f" [{wp.vor_info}]" if wp.vor_info else ""
+        raw = input(f"  {label}{current}: ").strip()
+        if raw:
+            wp.vor_info = raw
+
+
 # ------------------------- interactive TUI -------------------------
 
 def _tui() -> argparse.Namespace:
@@ -2335,6 +2648,7 @@ def _tui() -> argparse.Namespace:
 
     navigraph = src == "2"
     plan_path: Path | None = None
+    _preview: Plan | None = None
 
     dep_icao: str | None = None
     cruise_alt_default: float = 2500.0
@@ -2351,13 +2665,28 @@ def _tui() -> argparse.Namespace:
                 plan_path = p
                 break
             print(f"  Not found: {p}")
-        # Parse early so we can suggest the departure ICAO and cruise altitude.
+        # Parse immediately so waypoints and cruise alt are available for later prompts.
         try:
             _preview = parse_lnmpln(plan_path)
             dep_icao = _preview.waypoints[0].ident if _preview.waypoints else None
             cruise_alt_default = _preview.cruise_alt_ft
-        except Exception:
-            pass
+            _wps_str = f"{_preview.waypoints[0].ident} → {_preview.waypoints[-1].ident}"
+            print(f"  {G}Loaded: {_wps_str}  ({len(_preview.waypoints)} waypoints, "
+                  f"cruise alt {int(cruise_alt_default)} ft){R}")
+        except Exception as _exc:
+            print(f"  {DIM}Warning: could not parse plan ({_exc}) — waypoints unavailable.{R}")
+    else:
+        # Navigraph: pre-load the live plan so waypoints are available at the altitude step.
+        print(f"  {DIM}Reading active Navigraph flight plan…{R}", end="", flush=True)
+        try:
+            _preview = read_navigraph_flight(DEFAULT_XPLANE)
+            dep_icao = _preview.waypoints[0].ident if _preview.waypoints else None
+            cruise_alt_default = _preview.cruise_alt_ft
+            _wps_str = f"{_preview.waypoints[0].ident} → {_preview.waypoints[-1].ident}"
+            print(f"\r  {G}Loaded: {_wps_str}  ({len(_preview.waypoints)} waypoints, "
+                  f"cruise alt {int(cruise_alt_default)} ft){R}")
+        except BaseException:
+            print(f"\r  {DIM}Could not pre-load — waypoints available after generation.{R}")
 
     # --- Aircraft ---
     script_dir = Path(__file__).parent
@@ -2452,6 +2781,94 @@ def _tui() -> argparse.Namespace:
             pass
         print("  Enter a positive number in feet (e.g. 3500).")
 
+    # --- Altitude changes at waypoints ---
+    h("Altitude changes at waypoints  (optional)")
+    _prev_wps = _preview.waypoints if _preview is not None else []
+    # Coordinate-based waypoints (ident starts with a digit) get short aliases GPS1, GPS2, …
+    _gps_alias: dict[str, str] = {}       # original_ident.upper() -> "GPS1"
+    _alias_to_ident: dict[str, str] = {}  # "GPS1" -> original_ident.upper()
+    _gps_n = 1
+    for _awp in _prev_wps:
+        if _awp.ident and _awp.ident[0].isdigit():
+            _al = f"GPS{_gps_n}"
+            _gps_alias[_awp.ident.upper()] = _al
+            _alias_to_ident[_al] = _awp.ident.upper()
+            _gps_n += 1
+    if _prev_wps:
+        print("  Waypoints in route:")
+        for _wi, _wp in enumerate(_prev_wps):
+            _al = _gps_alias.get(_wp.ident.upper(), "")
+            _label = f"{_al}  ({_wp.ident})" if _al else _wp.ident
+            print(f"    {_wi + 1:2d}.  {_label}")
+    print(f"  Current cruise alt: {int(cruise_alt_ft)} ft from departure.")
+    print(f"  Enter WP ALT pairs for step climbs/descents. Empty line to finish.")
+    # Build example idents from the actual route: first interior named WP and first GPS alias.
+    _ex_dep = _prev_wps[0].ident if _prev_wps else "EDDG"
+    _ex_named = next(
+        (wp.ident for wp in _prev_wps[1:-1] if not wp.ident[0:1].isdigit()),
+        "BADGO",
+    )
+    _ex_named2 = next(
+        (wp.ident for wp in _prev_wps[1:-1] if not wp.ident[0:1].isdigit() and wp.ident != _ex_named),
+        "WLD",
+    )
+    _ex_gps = next(iter(_alias_to_ident), "GPS1")
+    print(f"  e.g.  {_ex_dep} {_ex_named} 4500   fly 4 500 ft from {_ex_dep} to {_ex_named}, then revert")
+    print(f"        {_ex_named} {_ex_named2} 15000  fly 15 000 ft from {_ex_named} to {_ex_named2}, then revert")
+    print(f"        {_ex_named2} 5500         step down to 5 500 ft at {_ex_named2} (open-ended)")
+    print(f"        {_ex_gps} 4500           same for a GPS fix")
+    alt_profile: list[tuple[str, float]] = []
+    _known_orig = {wp.ident.upper() for wp in _prev_wps}
+
+    def _resolve(tok: str) -> str:
+        t = tok.upper()
+        return _alias_to_ident.get(t, t)
+
+    def _disp(ident: str) -> str:
+        return _gps_alias.get(ident.upper(), ident)
+
+    while True:
+        raw = input("  → ").strip()
+        if not raw:
+            break
+        _parts = raw.split()
+        if len(_parts) == 2:
+            # WP ALT — altitude from WP onwards until the next change
+            _w1, _alt_raw = _parts
+            _w1 = _resolve(_w1)
+            try:
+                _alt_in = float(_alt_raw)
+                if _alt_in <= 0:
+                    raise ValueError
+            except ValueError:
+                print("  Altitude must be a positive number in feet.")
+                continue
+            if _known_orig and _w1 not in _known_orig:
+                print(f"  {DIM}Warning: {_w1} not in route — adding anyway.{R}")
+            alt_profile.append((_w1, _alt_in))
+            print(f"  {G}From {_disp(_w1)}: {int(_alt_in):,} ft{R}")
+        elif len(_parts) == 3:
+            # WP1 WP2 ALT — closed segment: fly ALT from WP1, revert to cruise_alt_ft at WP2
+            _w1, _w2, _alt_raw = _parts
+            _w1, _w2 = _resolve(_w1), _resolve(_w2)
+            try:
+                _alt_in = float(_alt_raw)
+                if _alt_in <= 0:
+                    raise ValueError
+            except ValueError:
+                print("  Altitude must be a positive number in feet.")
+                continue
+            for _wchk in (_w1, _w2):
+                if _known_orig and _wchk not in _known_orig:
+                    print(f"  {DIM}Warning: {_wchk} not in route — adding anyway.{R}")
+            alt_profile.append((_w1, _alt_in))
+            alt_profile.append((_w2, cruise_alt_ft))  # auto-revert to base cruise alt
+            print(f"  {G}From {_disp(_w1)} to {_disp(_w2)}: {int(_alt_in):,} ft  "
+                  f"(→ {int(cruise_alt_ft):,} ft from {_disp(_w2)}){R}")
+        else:
+            print("  Format:  WP ALT          e.g. BADGO 15000")
+            print("           WP1 WP2 ALT     e.g. EDDG HMM 4500")
+
     # --- Magnetic variation ---
     h("Magnetic variation  (e.g. 4E, 1.0W, -2.5)")
     while True:
@@ -2464,6 +2881,10 @@ def _tui() -> argparse.Namespace:
     # --- VATSIM ---
     h("VATSIM  (fetch live ATC frequencies?)")
     vatsim = input("  → [y/N]: ").strip().lower() in ("y", "yes")
+
+    # --- VOR info per waypoint ---
+    h("VOR-Informationen je Wegpunkt angeben?  (z. B. 233 FROM)")
+    vor_info = input("  → [y/N]: ").strip().lower() in ("y", "yes")
 
     # --- DFS charts ---
     h("DFS airport charts  (append VFR charts for destination?)")
@@ -2496,11 +2917,13 @@ def _tui() -> argparse.Namespace:
         magvar=magvar_str,
         output=None,
         vatsim=vatsim,
+        vor_info=vor_info,
         dfs_charts=dfs_charts,
         call_tower_nm=10.0,
         xplane=DEFAULT_XPLANE,
         registration=registration,
         cruise_alt=cruise_alt_ft,
+        alt_profile=alt_profile,
         fms=fms,
         fpl_fields=fpl_fields,
         # CLI FPL args are absent in TUI mode; use None as sentinel
@@ -2533,10 +2956,15 @@ def main():
                     help="Override the aircraft registration from the JSON (e.g. D-EXXX).")
     ap.add_argument("--cruise-alt", type=float, default=None,
                     help="Override the cruise altitude from the flight plan (feet MSL, e.g. 3500).")
+    ap.add_argument("--alt-change", action="append", nargs=2, metavar=("WP", "ALT"),
+                    help="Step to a new cruise altitude at a waypoint "
+                         "(e.g. --alt-change BADGO 15000). May be given multiple times in route order.")
     ap.add_argument("--fms", action="store_true",
                     help="Write an X-Plane FMS flight plan to Output/FMS plans/ (or next to PDF if --xplane is unset).")
     ap.add_argument("--dfs-charts", action="store_true", default=False,
                     help="Append VFR charts for the destination from the DFS AIP.")
+    ap.add_argument("--vor-info", action="store_true", default=False,
+                    help="Prompt for a free-text VOR reference (e.g. '233 FROM') per waypoint.")
     fpl_grp = ap.add_argument_group("ICAO FPL output  (my.vatsim.net import)")
     fpl_grp.add_argument("--fpl-eobt", default=None, metavar="HHMM",
                          help="Generate ICAO FPL with this EOBT (UTC), e.g. 1030. "
@@ -2577,13 +3005,24 @@ def main():
         aircraft["registration"] = args.registration
     if getattr(args, "cruise_alt", None) is not None:
         plan.cruise_alt_ft = float(args.cruise_alt)
+    # TUI sets alt_profile directly; CLI uses --alt-change WP ALT pairs.
+    _tui_profile = getattr(args, "alt_profile", None)
+    if _tui_profile is not None:
+        plan.alt_profile = _tui_profile
+    else:
+        raw_changes = getattr(args, "alt_change", None) or []
+        plan.alt_profile = [(wp.upper(), float(alt)) for wp, alt in raw_changes]
     wind = parse_wind(args.wind)
     magvar = parse_magvar(args.magvar)
+
+    if getattr(args, "vor_info", False):
+        collect_vor_info(plan)
 
     fir_icaos = _german_firs_for_route(plan.waypoints)
 
     snapshot: VatsimSnapshot | None = None
     briefing: WeatherBriefing | None = None
+    field_wx: dict[str, FieldWx] = {}
     if args.vatsim:
         dep_icao  = plan.waypoints[0].ident
         dest_icao = plan.waypoints[-1].ident
@@ -2609,6 +3048,23 @@ def main():
             if pm:
                 print(f"[weather] {icao}: {pm.vfr_status()}  ceiling={pm.ceiling_ft} ft  vis={pm.vis_m} m  QNH={pm.qnh_hpa}")
 
+        # Platzwetter: VATSIM-ATIS bevorzugt, sonst echtes METAR (Wind/Temp/Druck).
+        for icao in icaos:
+            wx = field_weather(icao, snapshot, briefing)
+            if wx:
+                field_wx[icao] = wx
+                print(f"[weather] {icao}: {wx.source}  Wind={_wx_wind_cell(wx.parsed) or '—'}  "
+                      f"T/Td={_wx_ttd_cell(wx.parsed) or '—'}  QNH={wx.parsed.qnh_hpa or '—'}")
+
+        # Ohne explizites --wind den Abflug-Oberflächenwind als Wind aloft nutzen.
+        dep_wx = field_wx.get(dep_icao.upper())
+        if args.wind == "0/0" and dep_wx and dep_wx.parsed.wind_kt is not None:
+            wd = dep_wx.parsed.wind_dir if (dep_wx.parsed.wind_dir is not None
+                                            and not dep_wx.parsed.wind_vrb) else 0
+            wind = (float(wd), float(dep_wx.parsed.wind_kt))
+            print(f"[weather] wind aloft aus {dep_icao} {wd:03d}/{int(wind[1]):02d} "
+                  f"({dep_wx.source}, Oberfläche – kein Höhenwind)")
+
     tas = aircraft["performance"]["tas_cruise"]
     burn = aircraft["performance"]["fuel_burn_cruise_lph"]
     legs = compute_legs(plan, tas, wind, magvar, burn)
@@ -2633,7 +3089,8 @@ def main():
            vatsim=snapshot, call_tower_nm=args.call_tower_nm,
            dest_info=dest_info, source_note=source_note,
            fir_icaos=fir_icaos, weather=briefing,
-           dfs_charts=getattr(args, "dfs_charts", False))
+           dfs_charts=getattr(args, "dfs_charts", False),
+           field_wx=field_wx)
     print(f"Wrote {out}")
     total_d = sum(l.distance_nm for l in legs)
     total_t = sum(l.ete_min for l in legs)
