@@ -545,6 +545,63 @@ def _effective_leg_alt(plan: Plan, wp_idx: int) -> float:
     return alt
 
 
+def hemispheric_alt(alt_ft: float, mh: float) -> float:
+    """Return the nearest compliant VFR hemispheric cruising altitude >= alt_ft.
+
+    ICAO/SERA semi-circular rule:
+      MH 000–179 (eastbound): 1500, 3500, 5500, 7500 … ft
+      MH 180–359 (westbound): 2500, 4500, 6500, 8500 … ft
+
+    Altitudes below 1500 ft are returned unchanged (below the rule's floor).
+    """
+    if alt_ft < 1500:
+        return alt_ft
+    if mh < 180:
+        base = 1500.0
+    else:
+        base = 2500.0
+    n = math.ceil((alt_ft - base) / 2000.0)
+    return base + max(0, n) * 2000.0
+
+
+def apply_hemispheric_rule(plan: Plan, legs: list[Leg]) -> None:
+    """Adjust plan altitudes so every leg complies with the VFR hemispheric rule.
+
+    Checks each leg after all user-entered altitudes are final. Prints a notice
+    for every leg that required adjustment. Updates plan.cruise_alt_ft and
+    plan.alt_profile in-place; the new profile is a minimal encoding of the
+    per-leg corrected altitudes.
+    """
+    if not legs:
+        return
+
+    old_alts = [_effective_leg_alt(plan, i) for i in range(len(legs))]
+    new_alts = [hemispheric_alt(old_alts[i], legs[i].mh) for i in range(len(legs))]
+
+    changed = [(i, old_alts[i], new_alts[i]) for i in range(len(legs)) if new_alts[i] != old_alts[i]]
+    if not changed:
+        return
+
+    print("[hemispheric] Adjusted altitudes to comply with the VFR semi-circular rule:")
+    for i, old, new in changed:
+        dep = plan.waypoints[i].ident
+        arr = plan.waypoints[i + 1].ident
+        mh = legs[i].mh
+        direction = "E" if mh < 180 else "W"
+        print(f"  {dep}→{arr}  MH {mh:.0f}° ({direction}):  {int(old):,} ft → {int(new):,} ft")
+
+    # Rebuild alt_profile from the corrected per-leg altitudes.
+    # cruise_alt_ft becomes the corrected altitude of the first leg.
+    plan.cruise_alt_ft = new_alts[0]
+    new_profile: list[tuple[str, float]] = []
+    prev = new_alts[0]
+    for i in range(1, len(legs)):
+        if new_alts[i] != prev:
+            new_profile.append((plan.waypoints[i].ident, new_alts[i]))
+            prev = new_alts[i]
+    plan.alt_profile = new_profile
+
+
 # ------------------------- PDF -------------------------
 
 class NavlogPDF(FPDF):
@@ -3068,6 +3125,7 @@ def main():
     tas = aircraft["performance"]["tas_cruise"]
     burn = aircraft["performance"]["fuel_burn_cruise_lph"]
     legs = compute_legs(plan, tas, wind, magvar, burn)
+    apply_hemispheric_rule(plan, legs)
 
     dest_info: AirportInfo | None = None
     if xplane_path:
