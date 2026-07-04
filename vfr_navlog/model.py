@@ -6,6 +6,31 @@ from pathlib import Path
 
 
 @dataclass
+class VorStation:
+    """A VOR from earth_nav.dat, with the two fields the old parser dropped."""
+    ident: str
+    name: str
+    freq: str            # "116.30", MHz as printed on the chart
+    lat: float
+    lon: float
+    range_nm: float      # published reception range (earth_nav.dat parts[5])
+    slaved_var: float    # slaved variation, deg, East positive (parts[6])
+    has_dme: bool = False
+
+
+@dataclass
+class RadialFix:
+    """One VOR cross-check line for a waypoint: 'HLZ 116.30 R245'."""
+    vor_ident: str       # "HLZ"
+    vor_name: str        # "Hehlingen" — for the navaid reference table
+    freq: str            # "116.30"
+    radial: int          # 0–359, magnetic FROM station, slaved-variation corrected
+    dist_nm: float       # station → waypoint, for the DME cross-check
+    has_dme: bool
+    overhead: bool = False  # waypoint is (near) station passage
+
+
+@dataclass
 class Waypoint:
     name: str
     ident: str
@@ -16,6 +41,7 @@ class Waypoint:
     region: str | None = None
     freq: str | None = None
     vor_info: str | None = None  # free-text VOR/navaid reference, e.g. "233 FROM"
+    fixes: list[RadialFix] = field(default_factory=list)  # 0–2 computed cross-checks
 
 
 @dataclass
@@ -166,6 +192,7 @@ class RenderContext:
     source_note: str
     call_tower_nm: float
     with_dfs_charts: bool
+    navaids: list = field(default_factory=list)  # distinct RadialFix per station, for the reference block
 
 
 @dataclass
@@ -190,3 +217,4 @@ class RunConfig:
     call_tower_nm: float
     fms: bool
     fpl_fields: dict | None
+    vor_fixes: bool = False  # compute automatic VOR radial cross-checks per waypoint

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .config import APT_REL, FIX_REL, NAV_FALLBACK_REL, NAV_REL, SURFACE_NAMES
 from .geo import haversine_m
-from .model import AirportInfo, IlsLoc, Plan, Runway
+from .model import AirportInfo, IlsLoc, Plan, Runway, VorStation
 
 
 def scan_airports(apt_path: Path, icaos) -> dict[str, AirportInfo]:
@@ -162,6 +162,76 @@ def load_destination_info(plan: Plan, xplane_path: Path) -> AirportInfo | None:
         nav_path = xplane_path / NAV_FALLBACK_REL
     info.ils_locs = parse_ils_locs(nav_path, info.icao)
     return info
+
+
+def load_vors(xplane_path: Path) -> list[VorStation]:
+    """Every VOR in earth_nav.dat, keeping the two fields _build_nav_index drops.
+
+    earth_nav.dat type-3 (VOR) rows (X-Plane 1150 layout):
+        3  lat  lon  elev  freq  range  slaved_var  ident  terminal  region  name...
+    freq is in 10s of kHz (10850 → 108.50 MHz); range is the published reception
+    range in nm; slaved_var is the magnetic variation the station was calibrated
+    to (East positive) — a radial is measured against *this*, not the plan magvar.
+    The two tokens after the ident are the terminal-area id ("ENRT" for enroute)
+    and the ICAO region; the human name follows.
+
+    Co-located DME is detected from type-12 (DME of a VOR/ILS) and type-13
+    (standalone DME) rows whose ident+freq match a VOR. Standalone DME with no
+    matching VOR produces no station (there is no OBS to set).
+
+    Returns [] if the file is absent or unreadable — the caller degrades, never
+    fails the run.
+    """
+    nav_path = xplane_path / NAV_REL
+    if not nav_path.exists():
+        nav_path = xplane_path / NAV_FALLBACK_REL
+    if not nav_path.exists():
+        return []
+
+    vors: list[VorStation] = []
+    dme_keys: set[tuple[str, str]] = set()
+    try:
+        with open(nav_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 8 or parts[0] not in {"3", "12", "13"}:
+                    continue
+                try:
+                    raw_freq = int(parts[4])
+                except ValueError:
+                    continue
+                freq_str = f"{raw_freq / 100:.2f}"
+                ident = parts[7]
+                if parts[0] in {"12", "13"}:
+                    dme_keys.add((ident, freq_str))
+                    continue
+                # type 3 — a VOR
+                if len(parts) < 9:
+                    continue
+                try:
+                    lat = float(parts[1])
+                    lon = float(parts[2])
+                    range_nm = float(parts[5])
+                    slaved_var = float(parts[6])
+                except ValueError:
+                    continue
+                # Skip the terminal-area id and ICAO region to get the plain name.
+                name = " ".join(parts[10:]) if len(parts) >= 11 else " ".join(parts[8:])
+                vors.append(VorStation(
+                    ident=ident,
+                    name=name,
+                    freq=freq_str,
+                    lat=lat, lon=lon,
+                    range_nm=range_nm,
+                    slaved_var=slaved_var,
+                ))
+    except OSError:
+        return []
+
+    for v in vors:
+        if (v.ident, v.freq) in dme_keys:
+            v.has_dme = True
+    return vors
 
 
 def _build_nav_index(xplane_path: Path, idents: set[str]) -> dict[str, list[tuple[float, float, str]]]:
