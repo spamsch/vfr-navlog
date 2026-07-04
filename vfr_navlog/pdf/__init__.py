@@ -10,6 +10,7 @@ from .charts import _append_dfs_charts
 from .destination import render_destination_page
 from .navlog_page import render_navlog_page
 from .phraseology import render_phraseology
+from .waypoint_pages import render_waypoint_pages
 from .weather_page import render_weather_page
 
 
@@ -19,6 +20,9 @@ def render(ctx: RenderContext, out: Path) -> None:
     date_str = datetime.now().strftime("%Y-%m-%d")
 
     render_navlog_page(pdf, font, ctx, date_str)
+
+    # Per-waypoint chart pages sit directly after the nav table (kneeboard order).
+    render_waypoint_pages(pdf, font, ctx)
 
     render_phraseology(pdf, font, ctx.plan, ctx.aircraft, ctx.vatsim, ctx.fir_icaos or [])
 

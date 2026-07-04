@@ -193,6 +193,7 @@ class RenderContext:
     call_tower_nm: float
     with_dfs_charts: bool
     navaids: list = field(default_factory=list)  # distinct RadialFix per station, for the reference block
+    wp_maps: list = field(default_factory=list)  # per-waypoint WaypointMap | None, in route order
 
 
 @dataclass
