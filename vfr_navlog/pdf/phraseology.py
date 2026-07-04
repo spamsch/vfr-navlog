@@ -1,4 +1,9 @@
-"""Phraseology pages: FIS/Radar en route and CTR entry via Whiskey."""
+"""Phraseology pages: FIS/Radar en route and CTR entry via Whiskey.
+
+The radio scripts live as data (labelled exchanges) and are rendered by one
+dispatch loop. Editing phraseology means editing the text tables below, not
+reading fpdf calls.
+"""
 from __future__ import annotations
 
 from fpdf import FPDF
@@ -122,6 +127,22 @@ def render_phraseology(pdf: FPDF, font: str, plan: Plan, aircraft: dict, vatsim:
         pdf.set_font(font, "I", 6)
         pdf.cell(0, 3, text, align="C")
 
+    # ── one dispatch loop renders a script (list of labelled exchanges) ────────
+    def emit(item: tuple) -> None:
+        kind = item[0]
+        if kind == "note":
+            note_box(item[1])
+        elif kind == "section":
+            section_bar(item[1], item[2] if len(item) > 2 else True)
+        elif kind == "row":
+            drow(item[1], item[2], item[3], item[4])
+        elif kind == "vbar":
+            vbar(item[1])
+        elif kind == "vrow":
+            vrow(item[1], item[2], item[3])
+        elif kind == "footer":
+            page_footer(item[1])
+
     # ── PAGE 1: FIS / en-route Radar ─────────────────────────────────────────
     radar_info = _find_radar_online(vatsim, fir_icaos or [])
     radar_name = radar_info[0] if radar_info else None
@@ -145,99 +166,82 @@ def render_phraseology(pdf: FPDF, font: str, plan: Plan, aircraft: dict, vatsim:
     pdf.ln(6)
 
     if radar_name:
-        note_box(
+        page1_note = (
             f"{radar_name} ONLINE — {radar_freq} MHz (VATSIM live).  "
             "Radardienst: aktive Staffelung möglich. "
             "Erstanruf: nur Rufzeichen — nach Rückfrage Vollmeldung mit Position, Höhe, POB. "
             "Squawk wie angewiesen (kein automatisches 7000)."
         )
     else:
-        note_box(
+        page1_note = (
             "Bremen Information (Langen Center) = Fluginformationsdienst, keine Staffelung. "
             "Erstanruf: nur Rufzeichen — erst nach Rückfrage die Vollmeldung abgeben. "
             "POB immer nennen. Squawk VFR = 7000. Frequenz: AIP / Streckenkarte prüfen."
         )
 
-    section_bar("A · Erstkontakt & Vollmeldung  ·  Initial contact & full position report")
-
-    drow("PILOT",
+    page1_items = [
+        ("note", page1_note),
+        ("section", "A · Erstkontakt & Vollmeldung  ·  Initial contact & full position report"),
+        ("row", "PILOT",
          f"Bremen Information, {reg}.",
-         f"Bremen Information, {reg}.")
-
-    drow("FIS",
+         f"Bremen Information, {reg}.", False),
+        ("row", "FIS",
          f"{reg}, Bremen Information, bitte melden.",
-         f"{reg}, Bremen Information, go ahead.",
-         atc=True)
-
-    drow("PILOT",
+         f"{reg}, Bremen Information, go ahead.", True),
+        ("row", "PILOT",
          f"{reg}, {ac_type}, VFR von {dep.ident} nach {dest.ident}, "
          f"[Position, z. B. 10 km nördlich Osnabrück], [2500 Fuß], "
          "[2] Personen an Bord, erbitte Verkehrsinformationen.",
          f"{reg}, {ac_type}, VFR from {dep.ident} to {dest.ident}, "
          f"[position, e.g. 10 km north of Osnabrück], [2500 feet], "
-         "[2] persons on board, request traffic information.")
-
-    drow("FIS",
+         "[2] persons on board, request traffic information.", False),
+        ("row", "FIS",
          f"{reg}, identifiziert, [2500 Fuß], QNH [1018], Squawk [7631], "
          "Verkehrsinformationen soweit möglich.",
          f"{reg}, identified, [2500 feet], QNH [1018], squawk [7631], "
-         "traffic information workload permitting.",
-         atc=True)
-
-    drow("PILOT",
+         "traffic information workload permitting.", True),
+        ("row", "PILOT",
          f"QNH [1018], Squawk [7631], {reg}.",
-         f"QNH [1018], squawk [7631], {reg}.")
-
-    section_bar("B · Verkehrsinformation & Frequenzverlassen  ·  Traffic info & leaving FIS",
-                with_cols=False)
-
-    drow("FIS",
+         f"QNH [1018], squawk [7631], {reg}.", False),
+        ("section", "B · Verkehrsinformation & Frequenzverlassen  ·  Traffic info & leaving FIS", False),
+        ("row", "FIS",
          f"{reg}, Verkehr, [Cessna 172, 12 Uhr, 4 Meilen], entgegenkommend, [2500 Fuß], "
          "melden Sie Verkehr in Sicht.",
          f"{reg}, traffic, [Cessna 172, 12 o'clock, 4 miles], opposite direction, [2500 feet], "
-         "report traffic in sight.",
-         atc=True)
-
-    drow("PILOT",
+         "report traffic in sight.", True),
+        ("row", "PILOT",
          f"Verkehr in Sicht / nicht in Sicht, {reg}.",
-         f"Traffic in sight / not in sight, {reg}.")
-
-    drow("PILOT",
+         f"Traffic in sight / not in sight, {reg}.", False),
+        ("row", "PILOT",
          f"{reg}, erbitte Verlassen der Frequenz.",
-         f"{reg}, request frequency change.")
-
-    drow("FIS",
+         f"{reg}, request frequency change.", False),
+        ("row", "FIS",
          f"{reg}, Frequenzwechsel genehmigt, Squawk VFR, auf Wiederhören.",
-         f"{reg}, frequency change approved, squawk 7000, goodbye.",
-         atc=True)
-
-    drow("PILOT",
+         f"{reg}, frequency change approved, squawk 7000, goodbye.", True),
+        ("row", "PILOT",
          f"Squawk VFR, {reg}, auf Wiederhören.",
-         f"Squawk 7000, {reg}, goodbye.")
-
-    vbar("Mögliche FIS-Antworten  ·  Possible FIS responses")
-
-    vrow("Hohe Arbeitsbelastung\nWorkload denial",
+         f"Squawk 7000, {reg}, goodbye.", False),
+        ("vbar", "Mögliche FIS-Antworten  ·  Possible FIS responses"),
+        ("vrow", "Hohe Arbeitsbelastung\nWorkload denial",
          f"{reg}, aufgrund hoher Arbeitsbelastung kein Fluginformationsdienst möglich. "
          f"Squawk 7000, auf Wiederhören.\n→  Verstanden, Squawk 7000, {reg}.",
          f"{reg}, unable to provide FIS due to high workload. "
-         f"Squawk 7000, goodbye.\n→  Roger, squawk 7000, {reg}.")
-
-    vrow("Kein Radarkontakt\nNo radar contact",
+         f"Squawk 7000, goodbye.\n→  Roger, squawk 7000, {reg}."),
+        ("vrow", "Kein Radarkontakt\nNo radar contact",
          f"{reg}, kein Radarkontakt. Bitte Position genauer angeben.\n"
          f"→  {reg}, [5 km westlich Mast Steinkimmen], Kurs [120 Grad].",
          f"{reg}, no radar contact. Say position more precisely.\n"
-         f"→  {reg}, [5 km west of Steinkimmen mast], heading [120].")
-
-    vrow("POB-Nachfrage\nPOB query",
+         f"→  {reg}, [5 km west of Steinkimmen mast], heading [120]."),
+        ("vrow", "POB-Nachfrage\nPOB query",
          f"{reg}, wie viele Personen an Bord?\n→  [2] Personen an Bord, {reg}.",
-         f"{reg}, persons on board?\n→  [2] persons on board, {reg}.")
-
-    page_footer(
-        "FIS = Fluginformationsdienst — keine Staffelung, keine Separierung. "
-        "Frequenzwechsel erst nach Genehmigung. Squawk 7000 beim Verlassen. "
-        "Quelle: DFS Sprechfunkverfahren / VATSIM Germany KB."
-    )
+         f"{reg}, persons on board?\n→  [2] persons on board, {reg}."),
+        ("footer",
+         "FIS = Fluginformationsdienst — keine Staffelung, keine Separierung. "
+         "Frequenzwechsel erst nach Genehmigung. Squawk 7000 beim Verlassen. "
+         "Quelle: DFS Sprechfunkverfahren / VATSIM Germany KB."),
+    ]
+    for item in page1_items:
+        emit(item)
 
     # ── PAGE 2: CTR entry via Whiskey ─────────────────────────────────────────
     pdf.add_page()
@@ -255,112 +259,84 @@ def render_phraseology(pdf: FPDF, font: str, plan: Plan, aircraft: dict, vatsim:
              align="C")
     pdf.ln(6)
 
-    note_box(
-        "Vorher: ATIS abhören, Buchstaben und QNH notieren, max. Einflughöhe beachten (oft 2000 ft). "
-        "Erstanruf ca. 10–15 NM vor der CTR-Grenze: nur Rufzeichen — dann warten! "
-        "Vollmeldung mit ATIS-Buchstabe erst nach Rückfrage."
-    )
-
-    section_bar("C · Erstkontakt Tower & Einflugfreigabe  ·  Initial call & CTR entry clearance")
-
-    drow("PILOT",
+    page2_items = [
+        ("note",
+         "Vorher: ATIS abhören, Buchstaben und QNH notieren, max. Einflughöhe beachten (oft 2000 ft). "
+         "Erstanruf ca. 10–15 NM vor der CTR-Grenze: nur Rufzeichen — dann warten! "
+         "Vollmeldung mit ATIS-Buchstabe erst nach Rückfrage."),
+        ("section", "C · Erstkontakt Tower & Einflugfreigabe  ·  Initial call & CTR entry clearance"),
+        ("row", "PILOT",
          f"{dest_name} Tower, {reg}.",
-         f"{dest_name} Tower, {reg}.")
-
-    drow("TWR",
+         f"{dest_name} Tower, {reg}.", False),
+        ("row", "TWR",
          f"{reg}, {dest_name} Tower, bitte melden.",
-         f"{reg}, {dest_name} Tower, go ahead.",
-         atc=True)
-
-    drow("PILOT",
+         f"{reg}, {dest_name} Tower, go ahead.", True),
+        ("row", "PILOT",
          f"{reg}, {ac_type}, VFR von {dep.ident}, [15 km nordwestlich Whiskey], [2000 Fuß], "
          "Information [Alpha] erhalten, erbitte Einflug über Whiskey zur Landung.",
          f"{reg}, {ac_type}, VFR from {dep.ident}, [15 km northwest of Whiskey], [2000 feet], "
-         "information [Alpha] received, request entry via Whiskey for landing.")
-
-    drow("TWR",
+         "information [Alpha] received, request entry via Whiskey for landing.", False),
+        ("row", "TWR",
          f"{reg}, fliegen Sie in die Kontrollzone über Whiskey, "
          "QNH [1018], erwarten Sie Piste [25].",
          f"{reg}, enter the control zone via Whiskey, "
-         "QNH [1018], expect runway [25].",
-         atc=True)
-
-    drow("PILOT",
+         "QNH [1018], expect runway [25].", True),
+        ("row", "PILOT",
          f"Einflug über Whiskey, QNH [1018], Piste [25], {reg}.",
-         f"Entering via Whiskey, QNH [1018], runway [25], {reg}.")
-
-    drow("TWR",
+         f"Entering via Whiskey, QNH [1018], runway [25], {reg}.", False),
+        ("row", "TWR",
          f"{reg}, melden Sie Whiskey.",
-         f"{reg}, report Whiskey.",
-         atc=True)
-
-    drow("PILOT",
+         f"{reg}, report Whiskey.", True),
+        ("row", "PILOT",
          f"Melde Whiskey, {reg}.",
-         f"Wilco, {reg}.")
-
-    section_bar("D · Am Meldepunkt Whiskey bis GA-Vorfeld  ·  At Whiskey through to GA apron",
-                with_cols=False)
-
-    drow("PILOT",
+         f"Wilco, {reg}.", False),
+        ("section", "D · Am Meldepunkt Whiskey bis GA-Vorfeld  ·  At Whiskey through to GA apron", False),
+        ("row", "PILOT",
          f"{reg}, Whiskey, [2000 Fuß].",
-         f"{reg}, Whiskey, [2000 feet].")
-
-    drow("TWR",
+         f"{reg}, Whiskey, [2000 feet].", False),
+        ("row", "TWR",
          f"{reg}, fliegen Sie in den [rechten] Gegenanflug Piste [25].",
-         f"{reg}, join [right] downwind runway [25].",
-         atc=True)
-
-    drow("PILOT",
+         f"{reg}, join [right] downwind runway [25].", True),
+        ("row", "PILOT",
          f"[Rechter] Gegenanflug Piste [25], {reg}.",
-         f"[Right] downwind runway [25], {reg}.")
-
-    drow("TWR",
+         f"[Right] downwind runway [25], {reg}.", False),
+        ("row", "TWR",
          f"{reg}, Wind [250 Grad, 8 Knoten], Piste [25], Landung frei.",
-         f"{reg}, wind [250 degrees, 8 knots], runway [25], cleared to land.",
-         atc=True)
-
-    drow("PILOT",
+         f"{reg}, wind [250 degrees, 8 knots], runway [25], cleared to land.", True),
+        ("row", "PILOT",
          f"Piste [25], Landung frei, {reg}.",
-         f"Runway [25], cleared to land, {reg}.")
-
-    drow("PILOT",
+         f"Runway [25], cleared to land, {reg}.", False),
+        ("row", "PILOT",
          f"{reg}, Piste [25] verlassen über [Alpha].",
-         f"{reg}, runway [25] vacated via [Alpha].")
-
-    drow("TWR",
+         f"{reg}, runway [25] vacated via [Alpha].", False),
+        ("row", "TWR",
          f"{reg}, rollen Sie zum GA-Vorfeld über [Alpha, Bravo], Squawk Standby.",
-         f"{reg}, taxi to GA apron via [Alpha, Bravo], squawk standby.",
-         atc=True)
-
-    drow("PILOT",
+         f"{reg}, taxi to GA apron via [Alpha, Bravo], squawk standby.", True),
+        ("row", "PILOT",
          f"GA-Vorfeld über [Alpha, Bravo], Squawk Standby, {reg}.",
-         f"GA apron via [Alpha, Bravo], squawk standby, {reg}.")
-
-    drow("PILOT",
+         f"GA apron via [Alpha, Bravo], squawk standby, {reg}.", False),
+        ("row", "PILOT",
          f"{reg}, Parkposition erreicht, auf Wiederhören.",
-         f"{reg}, on stand, goodbye.")
-
-    vbar("Mögliche Tower-Antworten  ·  Possible tower responses")
-
-    vrow("Einflug vorübergehend\nnicht möglich",
+         f"{reg}, on stand, goodbye.", False),
+        ("vbar", "Mögliche Tower-Antworten  ·  Possible tower responses"),
+        ("vrow", "Einflug vorübergehend\nnicht möglich",
          f"{reg}, können Sie [5 Minuten] außerhalb der CTR warten?\n"
          f"→  Warte außerhalb CTR, {reg}.",
          f"{reg}, can you hold outside the CTR for [5 minutes]?\n"
-         f"→  Holding outside CTR, {reg}.")
-
-    vrow("Squawk-Zuweisung\nSquawk assignment",
+         f"→  Holding outside CTR, {reg}."),
+        ("vrow", "Squawk-Zuweisung\nSquawk assignment",
          f"Squawk [7023].\n→  Squawk [7023], {reg}.",
-         f"Squawk [7023].\n→  Squawk [7023], {reg}.")
-
-    vrow("Sequenzierung hinter\nVerkehr  ·  Sequencing",
+         f"Squawk [7023].\n→  Squawk [7023], {reg}."),
+        ("vrow", "Sequenzierung hinter\nVerkehr  ·  Sequencing",
          f"{reg}, Verkehr voraus, [Piper auf Endanflug Piste 25], Verkehr in Sicht?\n"
          f"→  Verkehr in Sicht, {reg}.\n"
          f"TWR: Folgen Sie dem Verkehr, Piste [25], Landung frei.",
          f"{reg}, traffic ahead, [Piper on final runway 25], traffic in sight?\n"
          f"→  Traffic in sight, {reg}.\n"
-         "TWR: Follow traffic, runway [25], cleared to land.")
-
-    page_footer(
-        f"CTR-Einflug nur mit ausdrücklicher Freigabe. ATIS vor Erstkontakt abhören. "
-        f"Meldepunkt Whiskey ist {dest.ident}-spezifisch — Bezeichnung vor jedem Flug im Chart prüfen."
-    )
+         "TWR: Follow traffic, runway [25], cleared to land."),
+        ("footer",
+         f"CTR-Einflug nur mit ausdrücklicher Freigabe. ATIS vor Erstkontakt abhören. "
+         f"Meldepunkt Whiskey ist {dest.ident}-spezifisch — Bezeichnung vor jedem Flug im Chart prüfen."),
+    ]
+    for item in page2_items:
+        emit(item)
