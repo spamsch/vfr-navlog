@@ -305,6 +305,7 @@ def _tui() -> RunConfig:
     wp_maps = input("  → [y/N]: ").strip().lower() in ("y", "yes")
     map_radius_nm = 3.0
     map_base = "both"
+    chart_source = "ofm"
     if wp_maps:
         while True:
             raw = input("  Radius NM (1–5)  → [3]: ").strip() or "3"
@@ -319,6 +320,11 @@ def _tui() -> RunConfig:
         print(f"  {DIM}Basiskarte je Seite: [1] Karte + Orthofoto  [2] nur Karte  [3] nur Foto{R}")
         _bchoice = input("  → [1]: ").strip() or "1"
         map_base = {"1": "both", "2": "chart", "3": "photo"}.get(_bchoice, "both")
+        if map_base != "photo":
+            print(f"  {DIM}Kartenquelle: [1] openflightmaps  [2] DFS ICAO 500k "
+                  f"(© DFS — nur private Nutzung){R}")
+            _cchoice = input("  → [1]: ").strip() or "1"
+            chart_source = {"1": "ofm", "2": "dfs"}.get(_cchoice, "ofm")
 
     # --- FMS ---
     h("X-Plane FMS export")
@@ -360,4 +366,5 @@ def _tui() -> RunConfig:
         wp_maps=wp_maps,
         map_radius_nm=map_radius_nm,
         map_base=map_base,
+        chart_source=chart_source,
     )

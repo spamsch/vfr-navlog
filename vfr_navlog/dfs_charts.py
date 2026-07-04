@@ -43,6 +43,9 @@ SESSION.headers.update({
 def get(url: str) -> str:
     r = SESSION.get(url, timeout=30)
     r.raise_for_status()
+    # DFS pages are UTF-8 but omit the charset header; requests would guess
+    # latin-1 and mojibake the umlauts in chapter titles.
+    r.encoding = "utf-8"
     return r.text
 
 
@@ -50,20 +53,102 @@ def get(url: str) -> str:
 # Discovery: find current DFS chapter URL via aip.aero
 # ---------------------------------------------------------------------------
 
-_CHAPTER_RE = re.compile(
-    r'https://aip\.dfs\.de/Basic(?:VFR|IFR)/\d{4}[A-Z]+\d+/chapter/[0-9a-fA-F]+\.html'
+_AIP_BASE = {
+    "vfr": "https://aip.dfs.de/BasicVFR/",
+    "ifr": "https://aip.dfs.de/BasicIFR/",
+}
+
+# Folder entries in a chapter TOC page: relative chapter href + German title.
+_FOLDER_RE = re.compile(
+    r'href="([0-9a-fA-F]+\.html)">\s*<span lang="de" class="folder-name">([^<]*)</span>'
 )
+
+# Letter-group chapters inside "AD Flugplätze": "A", "B", "C-D", …
+_LETTER_GROUP_RE = re.compile(r"[A-Z](?:-[A-Z])?")
+
+# Memo per run: the AD chapter per section, resolved airport chapters, and the
+# airport display name learned from the VFR book ("Hannover EDDV" → "Hannover")
+# — the IFR book lists airports by name only, without ICAO codes.
+_ad_chapter_cache: dict[str, str | None] = {}
+_airport_chapter_cache: dict[tuple[str, str], str | None] = {}
+_vfr_name_cache: dict[str, str] = {}
+
+
+def _folders(chapter_url: str) -> list[tuple[str, str]]:
+    """(absolute_url, title) for every folder entry in a chapter TOC page."""
+    html = get(chapter_url)
+    base = chapter_url.rsplit("/", 1)[0] + "/"
+    return [(base + href, html_module.unescape(title.strip()))
+            for href, title in _FOLDER_RE.findall(html)]
 
 
 def find_chapter_url(icao: str, section: str) -> str | None:
     """
-    Query aip.aero to get the current DFS chapter URL for *section* ('vfr'|'ifr').
-    aip.aero embeds the URL in its HTML/JS bundle even before JS executes.
+    Walk the current AIP issue on aip.dfs.de to the airport's chapter.
+
+    aip.dfs.de/Basic{VFR,IFR}/ 307-redirects (GET only — a HEAD 404s) to the
+    current issue's root TOC; from there: root → "AD Flugplätze" → letter
+    group → "<Name> <ICAO>". Issue folders and chapter hashes change every
+    cycle, so nothing here is hardcoded to a date. The previous discovery
+    index, aip.aero, became a JS app in mid-2026 and no longer embeds these
+    URLs in its HTML — hence the direct walk.
     """
-    url = f"https://aip.aero/de/en/{section}/?{icao}="
-    html = get(url)
-    m = _CHAPTER_RE.search(html)
-    return m.group(0) if m else None
+    icao = icao.upper()
+    key = (icao, section)
+    if key in _airport_chapter_cache:
+        return _airport_chapter_cache[key]
+
+    if section not in _ad_chapter_cache:
+        r = SESSION.get(_AIP_BASE[section], timeout=30)
+        r.raise_for_status()
+        root_base = r.url.rsplit("/", 1)[0] + "/"
+        folders = [(root_base + href, title.strip())
+                   for href, title in _FOLDER_RE.findall(r.text)]
+        _ad_chapter_cache[section] = next(
+            (u for u, t in folders if t.startswith("AD ")), None)
+    ad_url = _ad_chapter_cache[section]
+
+    result: str | None = None
+    if ad_url and section == "vfr":
+        result = _letter_walk(ad_url, icao)
+    elif ad_url:
+        # BasicIFR lists airports by display name only ("Köln/Bonn"), nested
+        # under "AD 2 Flugplätze". Learn the name from the VFR book first.
+        name = _vfr_name_cache.get(icao)
+        if name is None:
+            find_chapter_url(icao, "vfr")
+            name = _vfr_name_cache.get(icao)
+        if name:
+            for sub_url, sub_title in _folders(ad_url):
+                if sub_title.startswith("AD 2"):
+                    for apt_url, apt_title in _folders(sub_url):
+                        if _norm_name(apt_title) == _norm_name(name):
+                            result = apt_url
+                            break
+                    break
+    _airport_chapter_cache[key] = result
+    return result
+
+
+def _norm_name(name: str) -> str:
+    """The VFR book transliterates umlauts ("Koeln"), the IFR book keeps them
+    ("Köln") — normalize both sides for comparison."""
+    for umlaut, ascii_ in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
+        name = name.replace(umlaut, ascii_).replace(umlaut.upper(), ascii_.capitalize())
+    return name.casefold()
+
+
+def _letter_walk(chapter_url: str, icao: str) -> str | None:
+    """Search a chapter's letter-group subchapters for '<Name> <ICAO>'."""
+    for group_url, group_title in _folders(chapter_url):
+        if not _LETTER_GROUP_RE.fullmatch(group_title):
+            continue
+        for apt_url, apt_title in _folders(group_url):
+            tokens = apt_title.split()
+            if icao in tokens:
+                _vfr_name_cache[icao] = " ".join(t for t in tokens if t != icao)
+                return apt_url
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -80,6 +80,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--map-base", choices=["both", "chart", "photo"], default="both",
                     help="Which base layers to render per waypoint page: both (chart + "
                          "orthophoto, default), chart only, or photo only. Only meaningful with --wp-maps.")
+    ap.add_argument("--chart-source", choices=["ofm", "dfs"], default="ofm",
+                    help="Chart source for the waypoint pages: ofm (openflightmaps, default) "
+                         "or dfs (official DFS ICAO 1:500,000 via ais.dfs.de — © DFS, "
+                         "personal flight-preparation use only, do not redistribute). "
+                         "Only meaningful with --wp-maps.")
     fpl_grp = ap.add_argument_group("ICAO FPL output  (my.vatsim.net import)")
     fpl_grp.add_argument("--fpl-eobt", default=None, metavar="HHMM",
                          help="Generate ICAO FPL with this EOBT (UTC), e.g. 1030. "
@@ -132,6 +137,7 @@ def _runconfig_from_cli(args: argparse.Namespace) -> RunConfig:
         wp_maps=args.wp_maps,
         map_radius_nm=max(1.0, min(5.0, float(args.map_radius_nm))),
         map_base=args.map_base,
+        chart_source=args.chart_source,
     )
 
 
@@ -269,7 +275,8 @@ def run(config: RunConfig) -> None:
 
         from .baselayers import prepare_waypoint_layers
         wp_maps = prepare_waypoint_layers(plan, config.map_radius_nm, date.today(),
-                                          map_base=config.map_base)
+                                          map_base=config.map_base,
+                                          chart_source=config.chart_source)
 
     if config.output is not None:
         out = config.output

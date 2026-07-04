@@ -228,3 +228,4 @@ class RunConfig:
     wp_maps: bool = False    # render per-waypoint OFM chart briefing pages
     map_radius_nm: float = 3.0  # excerpt radius, only meaningful with wp_maps
     map_base: str = "both"   # "both" | "chart" | "photo"; only meaningful with wp_maps
+    chart_source: str = "ofm"  # "ofm" | "dfs" (official ICAO 500k, personal use only)

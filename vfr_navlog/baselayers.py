@@ -193,6 +193,47 @@ class OfmChart:
         return ofm.map_excerpt(lat, lon, radius_nm, self.cycle, cache_dir=self.cache_dir)
 
 
+# --- Official DFS ICAO chart (opt-in) ---------------------------------------
+
+@dataclass
+class DfsIcaoChart:
+    """The official DFS ICAO 1:500,000 chart, stitched from the public
+    ais.dfs.de static-map tiles (256 px, zooms 9–12; verified live 2026-07-04,
+    2026 chart edition).
+
+    DISCLAIMER: the endpoint serves without authentication, but the chart is
+    © DFS Deutsche Flugsicherung GmbH — personal flight-preparation use only.
+    Do not redistribute rendered pages or cached tiles. That is why this
+    provider is opt-in (--chart-source dfs) and openflightmaps stays the
+    default chart source."""
+    zoom: int = 12
+    cache_dir: Path = CACHE_ROOT
+    name: str = "chart-dfs-icao"
+
+    def attribution(self) -> str:
+        return ("© DFS Deutsche Flugsicherung — ICAO-Karte 1:500.000 (ais.dfs.de) "
+                "— nur private Nutzung / personal use only")
+
+    def _tile_url(self, z: int, x: int, y: int) -> str:
+        return f"https://ais.dfs.de/static-maps/icao500/{z}/{x}/{y}.png"
+
+    def _tile(self, z: int, x: int, y: int, fetch: Fetch) -> bytes | None:
+        path = Path(self.cache_dir) / "dfs_icao500" / str(z) / str(x) / f"{y}.png"
+        return _cached_get(path, self._tile_url(z, x, y), fetch)
+
+    def get_image(self, lat: float, lon: float, radius_nm: float, min_px: int,
+                  fetch: Fetch | None = None) -> Image.Image | None:
+        if fetch is None:
+            fetch = _http_get
+        img = _stitch_256(lat, lon, radius_nm, self.zoom,
+                          lambda z, x, y: self._tile(z, x, y, fetch))
+        # Outside chart coverage the server answers transparent filler, which
+        # flattens to a uniform white square — degrade instead of framing it.
+        if img is not None and _is_blank(img):
+            return None
+        return img
+
+
 # --- State orthophoto (DOP20) over WMS -------------------------------------
 
 @dataclass
@@ -280,34 +321,51 @@ class Sentinel2:
                   fetch: Fetch | None = None) -> Image.Image | None:
         if fetch is None:
             fetch = _http_get
-        z = self.zoom
-        n = 2 ** z
-        left, top, side = s2_crop_geometry(lat, lon, radius_nm, z)
-        if side <= 0:
-            return None
-        tx0, tx1 = left // S2_TILE, (left + side - 1) // S2_TILE
-        ty0, ty1 = top // S2_TILE, (top + side - 1) // S2_TILE
-        cols, rows = tx1 - tx0 + 1, ty1 - ty0 + 1
-        canvas = Image.new("RGB", (cols * S2_TILE, rows * S2_TILE), (255, 255, 255))
-        coords = [(tx, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)]
+        return _stitch_256(lat, lon, radius_nm, self.zoom,
+                           lambda z, x, y: self._tile(z, x, y, fetch))
 
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            blobs = list(ex.map(lambda c: self._tile(z, c[0] % n, c[1], fetch), coords))
 
-        any_tile = False
-        for (tx, ty), blob in zip(coords, blobs):
-            if not blob:
-                continue
-            try:
-                tile = Image.open(io.BytesIO(blob)).convert("RGB")
-            except Exception:
-                continue
-            canvas.paste(tile, ((tx - tx0) * S2_TILE, (ty - ty0) * S2_TILE))
-            any_tile = True
-        if not any_tile:
-            return None
-        ox, oy = left - tx0 * S2_TILE, top - ty0 * S2_TILE
-        return canvas.crop((ox, oy, ox + side, oy + side))
+def _stitch_256(lat: float, lon: float, radius_nm: float, zoom: int,
+                tile_bytes) -> Image.Image | None:
+    """Stitch 256 px slippy tiles into the excerpt square around (lat, lon).
+
+    *tile_bytes(z, x, y)* returns the tile blob or None. Tiles with an alpha
+    channel are composited onto the white canvas (the DFS chart serves
+    transparent filler outside its coverage); a result with no tile at all is
+    None so the caller can degrade.
+    """
+    n = 2 ** zoom
+    left, top, side = s2_crop_geometry(lat, lon, radius_nm, zoom)
+    if side <= 0:
+        return None
+    tx0, tx1 = left // S2_TILE, (left + side - 1) // S2_TILE
+    ty0, ty1 = top // S2_TILE, (top + side - 1) // S2_TILE
+    cols, rows = tx1 - tx0 + 1, ty1 - ty0 + 1
+    canvas = Image.new("RGB", (cols * S2_TILE, rows * S2_TILE), (255, 255, 255))
+    coords = [(tx, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)]
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        blobs = list(ex.map(lambda c: tile_bytes(zoom, c[0] % n, c[1]), coords))
+
+    any_tile = False
+    for (tx, ty), blob in zip(coords, blobs):
+        if not blob:
+            continue
+        try:
+            tile = Image.open(io.BytesIO(blob))
+        except Exception:
+            continue
+        pos = ((tx - tx0) * S2_TILE, (ty - ty0) * S2_TILE)
+        if tile.mode in ("RGBA", "LA", "PA"):
+            tile = tile.convert("RGBA")
+            canvas.paste(tile, pos, tile)
+        else:
+            canvas.paste(tile.convert("RGB"), pos)
+        any_tile = True
+    if not any_tile:
+        return None
+    ox, oy = left - tx0 * S2_TILE, top - ty0 * S2_TILE
+    return canvas.crop((ox, oy, ox + side, oy + side))
 
 
 # --- Provider table --------------------------------------------------------
@@ -387,10 +445,13 @@ def _build_photo(lat: float, lon: float, radius_nm: float, min_px: int,
 
 def prepare_waypoint_layers(plan, radius_nm: float, today: date,
                             map_base: str = "both",
+                            chart_source: str = "ofm",
                             cache_dir: Path = CACHE_ROOT) -> list[WaypointLayers | None]:
     """Fetch, annotate, and pair chart + photo for every waypoint, in route order.
 
-    `map_base` selects which halves to build: "both", "chart", or "photo". A
+    `map_base` selects which halves to build: "both", "chart", or "photo".
+    `chart_source` selects the chart half: "ofm" (default) or "dfs" (the
+    official ICAO 500k — opt-in, personal use only; see DfsIcaoChart). A
     waypoint with neither image yields None so the renderer skips its page. Both
     images are resized to the OFM excerpt side and annotated with the same
     marker/route/scale, so they overlay perfectly; the aero overlay is on the
@@ -403,16 +464,23 @@ def prepare_waypoint_layers(plan, radius_nm: float, today: date,
     want_chart = map_base in ("both", "chart")
     want_photo = map_base in ("both", "photo")
 
-    ofm_cache = Path(cache_dir) / "ofm"
-    cycle = _resolve_cycle(wps[0].lat, wps[0].lon, today, ofm_cache) if want_chart else ""
-    chart_provider = OfmChart(cycle=cycle, cache_dir=ofm_cache) if want_chart else None
+    chart_provider = None
+    cycle = ""
+    if want_chart and chart_source == "dfs":
+        chart_provider = DfsIcaoChart(cache_dir=cache_dir)
+    elif want_chart:
+        ofm_cache = Path(cache_dir) / "ofm"
+        cycle = _resolve_cycle(wps[0].lat, wps[0].lon, today, ofm_cache)
+        chart_provider = OfmChart(cycle=cycle, cache_dir=ofm_cache)
     # Photo providers are constructed only when needed — "--map-base chart" must
     # never touch the photo endpoints.
     photo_provs = photo_providers(cache_dir) if want_photo else []
 
     which = " + ".join([p for p, on in (("chart", want_chart), ("photo", want_photo)) if on])
     print(f"[wp-maps] building {which} layers for {len(wps)} waypoint(s)"
-          + (f", AIRAC {cycle}" if want_chart else "") + "…")
+          + (f", AIRAC {cycle}" if cycle else "")
+          + (", chart: DFS ICAO 500k" if chart_source == "dfs" and want_chart else "")
+          + "…")
 
     results: list[WaypointLayers | None] = []
     n = len(wps)

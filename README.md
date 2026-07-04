@@ -228,9 +228,9 @@ For each airport it fetches:
 
 Output: individually numbered PNGs in `<ICAO>/` plus a combined `<ICAO>/<ICAO>_vfr_charts.pdf`.
 
-When `--dfs-charts` is set (or selected in the TUI), `navlog.py` calls this logic internally and appends the chart pages to the navlog PDF. Each chart gets its own page, oriented portrait or landscape to match the source image.
+When `--dfs-charts` is set (or selected in the TUI), `navlog.py` fetches charts for **both ends of the route** and places them in kneeboard order: the departure airport's charts start at page 3, directly after the nav table (the plates you need first come first); the destination's charts close the PDF at the very end.
 
-The chart data comes from `aip.aero` as the AIRAC-cycle discovery index and `aip.dfs.de` for the actual pages. Both are public. Charts are embedded as PNG in DFS's HTML — the script extracts and reassembles them; there are no PDF originals to download.
+Discovery walks `aip.dfs.de` directly: `aip.dfs.de/BasicVFR/` redirects to the current issue's table of contents, and the script descends root → AD → letter group → airport, so it always reads the current AIRAC issue with nothing hardcoded. (The old discovery index, aip.aero, became a JS app in mid-2026 and stopped embedding these URLs.) Charts are embedded as PNG in DFS's HTML — the script extracts and reassembles them; there are no PDF originals to download.
 
 ## VATSIM integration
 
@@ -317,7 +317,9 @@ With `--wp-maps`, the PDF gains one landscape briefing page per waypoint, in rou
 
 ### Base layers
 
-The **chart** is the openflightmaps composite: an opaque JPEG ground layer (z12) with a transparent aero overlay (z11, upscaled ×2), from the public slippy-tile API (`nwy-tiles-api.prod.newaydata.com`). The AIRAC cycle is computed from the date; on a publication-lag 404 the run falls back to the previous cycle once. Cached under `~/.cache/vfr-navlog/ofm/{cycle}/…`.
+The **chart** is, by default, the openflightmaps composite: an opaque JPEG ground layer (z12) with a transparent aero overlay (z11, upscaled ×2), from the public slippy-tile API (`nwy-tiles-api.prod.newaydata.com`). The AIRAC cycle is computed from the date; on a publication-lag 404 the run falls back to the previous cycle once. Cached under `~/.cache/vfr-navlog/ofm/{cycle}/…`.
+
+With **`--chart-source dfs`** the chart half switches to the **official DFS ICAO chart 1:500,000** (current edition), stitched from the publicly served static-map tiles at `ais.dfs.de/static-maps/icao500/{z}/{x}/{y}.png` (256 px, zooms 9–12) and cached under `~/.cache/vfr-navlog/dfs_icao500/…`. **Disclaimer:** that endpoint needs no authentication, but the chart is © DFS Deutsche Flugsicherung GmbH — use it for your own flight preparation only, never redistribute rendered pages, and never commit cached tiles anywhere. That is why `ofm` stays the default and the DFS source is strictly opt-in. Practical note: DFS serves at most ~23 m/px (z12), roughly half the OFM composite's effective resolution, so the official chart prints slightly softer at the same excerpt size.
 
 The **photo** comes from a cascade, best resolution first:
 

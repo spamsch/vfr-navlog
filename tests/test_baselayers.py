@@ -295,3 +295,57 @@ def test_prepare_both_pairs_chart_and_photo(tmp_path, monkeypatch):
         assert r.chart.size == r.photo.size  # aligned, same annotation grid
         assert r.chart_attribution and "open flightmaps" in r.chart_attribution
         assert r.photo_attribution
+
+
+# --- DFS ICAO chart (opt-in chart source) -----------------------------------
+
+def _png(rgba=None, size=256):
+    if rgba is not None:
+        img = Image.new("RGBA", (size, size), rgba)
+    else:
+        # Chart-ish tile with real dynamic range so the blank detector passes.
+        img = Image.new("RGBA", (size, size))
+        img.putdata([(x % 256, y % 256, (x + y) % 256, 255)
+                     for y in range(size) for x in range(size)])
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+CHART_PNG = _png()                              # opaque, wide-range chart tile
+FILLER_PNG = _png((0, 0, 0, 0))                 # transparent filler outside coverage
+
+
+def test_dfs_icao_stitches_and_flattens_alpha(tmp_path):
+    dfs = bl.DfsIcaoChart(cache_dir=tmp_path)
+    img = dfs.get_image(52.4, 9.7, 3.0, 900,
+                        fetch=lambda url, timeout=bl.HTTP_TIMEOUT: (200, CHART_PNG))
+    assert img is not None
+    _, _, side = bl.s2_crop_geometry(52.4, 9.7, 3.0, dfs.zoom)
+    assert img.size == (side, side)
+    assert img.mode == "RGB"
+
+
+def test_dfs_icao_transparent_filler_is_none(tmp_path):
+    # Outside chart coverage every tile is transparent filler → flattens to a
+    # uniform white square → provider degrades to None instead of framing it.
+    dfs = bl.DfsIcaoChart(cache_dir=tmp_path)
+    img = dfs.get_image(48.0, 2.0, 3.0, 900,
+                        fetch=lambda url, timeout=bl.HTTP_TIMEOUT: (200, FILLER_PNG))
+    assert img is None
+
+
+def test_dfs_icao_tiles_are_cached(tmp_path):
+    dfs = bl.DfsIcaoChart(cache_dir=tmp_path)
+    calls = {"n": 0}
+
+    def fetch(url, timeout=bl.HTTP_TIMEOUT):
+        calls["n"] += 1
+        return 200, CHART_PNG
+
+    dfs.get_image(52.4, 9.7, 3.0, 900, fetch=fetch)
+    first = calls["n"]
+    assert first > 0
+    dfs.get_image(52.4, 9.7, 3.0, 900, fetch=fetch)
+    assert calls["n"] == first          # second run fully served from disk
+    assert any((tmp_path / "dfs_icao500").rglob("*.png"))

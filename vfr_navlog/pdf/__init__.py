@@ -21,7 +21,14 @@ def render(ctx: RenderContext, out: Path) -> None:
 
     render_navlog_page(pdf, font, ctx, date_str)
 
-    # Per-waypoint chart pages sit directly after the nav table (kneeboard order).
+    # Departure airport charts start right after the nav table (page 3): the
+    # plates needed first in flight come first in the stack.
+    dep_icao = ctx.plan.waypoints[0].ident.upper()
+    dest_icao = ctx.plan.waypoints[-1].ident.upper()
+    if ctx.with_dfs_charts and dep_icao != dest_icao:
+        _append_dfs_charts(pdf, dep_icao)
+
+    # Per-waypoint chart pages follow (kneeboard order).
     render_waypoint_pages(pdf, font, ctx)
 
     render_phraseology(pdf, font, ctx.plan, ctx.aircraft, ctx.vatsim, ctx.fir_icaos or [])
@@ -32,7 +39,8 @@ def render(ctx: RenderContext, out: Path) -> None:
     if ctx.weather is not None:
         render_weather_page(pdf, font, ctx.weather, fir_icaos=ctx.fir_icaos, vatsim=ctx.vatsim)
 
+    # Destination airport charts close the stack.
     if ctx.with_dfs_charts:
-        _append_dfs_charts(pdf, ctx.plan.waypoints[-1].ident.upper())
+        _append_dfs_charts(pdf, dest_icao)
 
     pdf.output(str(out))
