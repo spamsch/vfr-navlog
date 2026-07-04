@@ -9,7 +9,7 @@ from pathlib import Path
 from .config import APT_REL, NAVIGRAPH_LDB, PROJECT_ROOT
 from .geo import haversine_m
 from .model import Plan, Waypoint
-from .xplane import _airport_position, _build_nav_index
+from .xplane import _build_nav_index, airport_positions
 
 
 def _decode_dms(token: str) -> tuple[float, float] | None:
@@ -57,10 +57,12 @@ def _navigraph_plan(data: dict, xplane_path: Path | None) -> Plan:
 
     if xplane_path:
         apt_path = xplane_path / APT_REL
+        # One pass over apt.dat resolves every route airport at once.
+        positions = airport_positions(apt_path, named_idents)
         for ident in named_idents:
-            p = _airport_position(apt_path, ident)
-            if p:
-                apt_pos[ident] = (p[0], p[1], "")
+            pos = positions.get(ident.upper())
+            if pos:
+                apt_pos[ident] = (pos[0], pos[1], "")
         unresolved = named_idents - set(apt_pos)
         if unresolved:
             nav_candidates = _build_nav_index(xplane_path, unresolved)

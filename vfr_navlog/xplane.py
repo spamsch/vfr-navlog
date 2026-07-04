@@ -8,36 +8,58 @@ from .geo import haversine_m
 from .model import AirportInfo, IlsLoc, Plan, Runway
 
 
-def parse_airport(apt_path: Path, icao: str) -> AirportInfo | None:
-    if not apt_path.exists():
-        return None
-    icao_upper = icao.upper()
+def scan_airports(apt_path: Path, icaos) -> dict[str, AirportInfo]:
+    """Single front-to-back pass over apt.dat answering for a *set* of ICAOs.
+
+    Returns {ICAO: AirportInfo} for each requested code found. Each AirportInfo
+    carries its runways and an averaged runway-endpoint position (.lat/.lon).
+    Replaces the two duplicate state machines (parse_airport / _airport_position);
+    X-Plane's global apt.dat is hundreds of MB, so we walk it once and stop as
+    soon as every requested airport has been read.
+    """
+    wanted = {i.upper() for i in icaos if i}
+    found: dict[str, AirportInfo] = {}
+    if not apt_path.exists() or not wanted:
+        return found
+
+    remaining = set(wanted)
     info: AirportInfo | None = None
-    in_target = False
+    lats: list[float] = []
+    lons: list[float] = []
+
+    def _finish(cur: AirportInfo | None) -> None:
+        if cur is not None and lats:
+            cur.lat = sum(lats) / len(lats)
+            cur.lon = sum(lons) / len(lons)
+
     try:
         with open(apt_path, encoding="utf-8", errors="replace") as f:
             for line in f:
-                line = line.rstrip("\n")
-                if not line:
-                    continue
                 parts = line.split()
                 if not parts:
                     continue
                 row = parts[0]
                 if row == "1" and len(parts) >= 5:
-                    # New airport header. Finish previous if it was ours.
-                    if in_target:
-                        break
-                    if parts[4].upper() == icao_upper:
+                    # New airport header: close out the previous target block.
+                    if info is not None:
+                        _finish(info)
+                        remaining.discard(info.icao)
+                        if not remaining:
+                            info = None
+                            break
+                    icao_upper = parts[4].upper()
+                    if icao_upper in wanted and icao_upper not in found:
                         info = AirportInfo(
                             icao=icao_upper,
                             name=" ".join(parts[5:]),
                             elevation_ft=float(parts[1]),
                         )
-                        in_target = True
+                        found[icao_upper] = info
+                        lats = []
+                        lons = []
                     else:
-                        in_target = False
-                elif in_target and info is not None:
+                        info = None
+                elif info is not None:
                     if row == "1302" and len(parts) >= 3:
                         key, val = parts[1], " ".join(parts[2:])
                         if key == "city":
@@ -65,11 +87,28 @@ def parse_airport(apt_path: Path, icao: str) -> AirportInfo | None:
                                 surface=SURFACE_NAMES.get(surface, surface),
                                 width_m=width, length_m=length_m,
                             ))
+                            lats += [lat_a, lat_b]
+                            lons += [lon_a, lon_b]
                         except (ValueError, IndexError):
                             continue
+        _finish(info)  # close the final block if we hit EOF mid-airport
     except OSError:
-        return None
-    return info
+        return found
+    return found
+
+
+def parse_airport(apt_path: Path, icao: str) -> AirportInfo | None:
+    """AirportInfo for a single ICAO (thin wrapper over the single-pass scan)."""
+    return scan_airports(apt_path, {icao}).get(icao.upper())
+
+
+def airport_positions(apt_path: Path, icaos) -> dict[str, tuple[float, float]]:
+    """Averaged runway-endpoint position per ICAO, in one pass."""
+    return {
+        icao: (info.lat, info.lon)
+        for icao, info in scan_airports(apt_path, icaos).items()
+        if info.lat is not None and info.lon is not None
+    }
 
 
 def parse_ils_locs(nav_path: Path, icao: str) -> list[IlsLoc]:
@@ -123,37 +162,6 @@ def load_destination_info(plan: Plan, xplane_path: Path) -> AirportInfo | None:
         nav_path = xplane_path / NAV_FALLBACK_REL
     info.ils_locs = parse_ils_locs(nav_path, info.icao)
     return info
-
-
-def _airport_position(apt_path: Path, icao: str) -> tuple[float, float] | None:
-    """Approximate airport lat/lon by averaging its runway endpoints from apt.dat."""
-    if not apt_path.exists():
-        return None
-    icao_upper = icao.upper()
-    in_target = False
-    lats: list[float] = []
-    lons: list[float] = []
-    try:
-        with open(apt_path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                parts = line.split()
-                if not parts:
-                    continue
-                if parts[0] == "1" and len(parts) >= 5:
-                    if in_target:
-                        break
-                    in_target = (parts[4].upper() == icao_upper)
-                elif in_target and parts[0] == "100" and len(parts) >= 20:
-                    try:
-                        lats += [float(parts[9]), float(parts[18])]
-                        lons += [float(parts[10]), float(parts[19])]
-                    except (ValueError, IndexError):
-                        pass
-    except OSError:
-        return None
-    if not lats:
-        return None
-    return sum(lats) / len(lats), sum(lons) / len(lons)
 
 
 def _build_nav_index(xplane_path: Path, idents: set[str]) -> dict[str, list[tuple[float, float, str]]]:

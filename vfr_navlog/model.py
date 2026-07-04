@@ -67,6 +67,8 @@ class AirportInfo:
     transition_alt: str = ""
     transition_level: str = ""
     iata: str = ""
+    lat: float | None = None   # averaged runway-endpoint position
+    lon: float | None = None
     runways: list[Runway] = None  # type: ignore[assignment]
     ils_locs: list[IlsLoc] = None  # type: ignore[assignment]
 
