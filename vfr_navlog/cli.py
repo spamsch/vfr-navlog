@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import DEFAULT_XPLANE, PROJECT_ROOT, _load_env, _smart_output
 from .exports import collect_vor_info, format_icao_fpl, write_fms
+from .fixes import attach_vor_fixes, navaids_in_plan
 from .legs import apply_hemispheric_rule, compute_legs
 from .lnmpln import parse_lnmpln, parse_magvar, parse_wind
 from .model import (
@@ -33,7 +34,7 @@ from .weather import (
     fetch_taf,
     field_weather,
 )
-from .xplane import load_destination_info
+from .xplane import load_destination_info, load_vors
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -68,6 +69,9 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Append VFR charts for the destination from the DFS AIP.")
     ap.add_argument("--vor-info", action="store_true", default=False,
                     help="Prompt for a free-text VOR reference (e.g. '233 FROM') per waypoint.")
+    ap.add_argument("--vor-fixes", action="store_true", default=False,
+                    help="Compute VOR radial cross-checks per waypoint from X-Plane earth_nav.dat "
+                         "(needs a resolvable --xplane). Manual --vor-info entries override them.")
     fpl_grp = ap.add_argument_group("ICAO FPL output  (my.vatsim.net import)")
     fpl_grp.add_argument("--fpl-eobt", default=None, metavar="HHMM",
                          help="Generate ICAO FPL with this EOBT (UTC), e.g. 1030. "
@@ -116,6 +120,7 @@ def _runconfig_from_cli(args: argparse.Namespace) -> RunConfig:
         call_tower_nm=args.call_tower_nm,
         fms=args.fms,
         fpl_fields=fpl_fields,
+        vor_fixes=args.vor_fixes,
     )
 
 
@@ -151,6 +156,23 @@ def run(config: RunConfig) -> None:
     plan.alt_profile = config.alt_profile
     wind = config.wind
     magvar = config.magvar
+
+    navaids: list = []
+    if config.vor_fixes:
+        if xplane_path:
+            stations = load_vors(xplane_path)
+            if stations:
+                attach_vor_fixes(plan, stations)
+                navaids = navaids_in_plan(plan)
+                n_fixes = sum(len(wp.fixes) for wp in plan.waypoints)
+                print(f"[vor-fixes] {len(stations)} VORs loaded, "
+                      f"{n_fixes} cross-checks over {len(navaids)} stations")
+            else:
+                print("[vor-fixes] no VOR data found in earth_nav.dat — skipping "
+                      "radial fixes.", file=sys.stderr)
+        else:
+            print("[vor-fixes] --xplane path not set — skipping radial fixes.",
+                  file=sys.stderr)
 
     if config.vor_info:
         collect_vor_info(plan)
@@ -244,6 +266,7 @@ def run(config: RunConfig) -> None:
         vatsim=snapshot, dest_info=dest_info, weather=briefing, field_wx=field_wx,
         fir_icaos=fir_icaos, source_note=source_note,
         call_tower_nm=config.call_tower_nm, with_dfs_charts=config.with_dfs_charts,
+        navaids=navaids,
     )
     render(ctx, out)
     print(f"Wrote {out}")

@@ -152,10 +152,21 @@ def collect_vor_info(plan: Plan) -> None:
     B, C, DIM, R = "\033[1m", "\033[36m", "\033[2m", "\033[0m"
     print(f"\n{B}{C}VOR-Informationen je Wegpunkt{R}")
     print(f"{DIM}Freitext pro Wegpunkt, z. B. \"233 FROM\" oder \"FRD R088\". "
-          f"Enter lässt einen Punkt leer.{R}")
+          f"Enter lässt einen Punkt leer bzw. übernimmt die berechnete Peilung.{R}")
     for wp in plan.waypoints:
         label = f"{wp.ident}  {wp.name}".strip() or wp.ident or "(unbenannt)"
-        current = f" [{wp.vor_info}]" if wp.vor_info else ""
+        if wp.vor_info:
+            current = f" [{wp.vor_info}]"
+        elif wp.fixes:
+            # Computed fixes are the default: Enter keeps them, typing overrides.
+            computed = " / ".join(
+                f"{fx.vor_ident} {fx.freq} "
+                + ("↑ overhead" if fx.overhead else f"R{fx.radial:03d}")
+                for fx in wp.fixes
+            )
+            current = f" [{computed}]"
+        else:
+            current = ""
         raw = input(f"  {label}{current}: ").strip()
         if raw:
             wp.vor_info = raw

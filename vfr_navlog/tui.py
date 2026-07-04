@@ -283,8 +283,15 @@ def _tui() -> RunConfig:
     h("VATSIM  (fetch live ATC frequencies?)")
     vatsim = input("  → [y/N]: ").strip().lower() in ("y", "yes")
 
+    # --- VOR radial fixes (automatic) ---
+    h("VOR-Kreuzpeilungen automatisch berechnen?  (aus X-Plane earth_nav.dat)")
+    print(f"  {DIM}Berechnet je Wegpunkt bis zu zwei VOR-Radiale zur Standlinien-Kontrolle.{R}")
+    vor_fixes = input("  → [y/N]: ").strip().lower() in ("y", "yes")
+
     # --- VOR info per waypoint ---
-    h("VOR-Informationen je Wegpunkt angeben?  (z. B. 233 FROM)")
+    h("VOR-Informationen je Wegpunkt manuell eingeben?  (z. B. 233 FROM)")
+    if vor_fixes:
+        print(f"  {DIM}Enter je Wegpunkt übernimmt die berechnete Peilung; Freitext überschreibt sie.{R}")
     vor_info = input("  → [y/N]: ").strip().lower() in ("y", "yes")
 
     # --- DFS charts ---
@@ -328,4 +335,5 @@ def _tui() -> RunConfig:
         call_tower_nm=10.0,
         fms=fms,
         fpl_fields=fpl_fields,
+        vor_fixes=vor_fixes,
     )
