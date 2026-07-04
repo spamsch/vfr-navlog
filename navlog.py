@@ -32,28 +32,39 @@ from pathlib import Path
 
 from fpdf import FPDF
 
-VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
-VATSIM_METAR_URL = "https://metar.vatsim.net/metar.php?id={icao}"
-VATSIM_TAF_URL  = "https://metar.vatsim.net/taf.php?id={icao}"
-VATSIM_UA = "navlog.py/1.0 (+local VFR planning script)"
-
-# VATSIM convention: tune 122.800 ("UNICOM") whenever no ATC station is online
-# in the airspace you're operating in.
-UNICOM_FREQ = "122.800"
-
-# Default macOS Steam install. Override via --xplane.
-DEFAULT_XPLANE = Path.home() / "Library/Application Support/Steam/steamapps/common/X-Plane 12"
-NAV_REL = "Custom Data/earth_nav.dat"
-NAV_FALLBACK_REL = "Resources/default data/earth_nav.dat"
-FIX_REL = "Resources/default data/earth_fix.dat"
-APT_REL = "Global Scenery/Global Airports/Earth nav data/apt.dat"
-
-NAVIGRAPH_LDB = Path.home() / "Library/Application Support/Navigraph Charts/Local Storage/leveldb"
-
-SURFACE_NAMES = {
-    "1": "Asphalt", "2": "Beton", "3": "Gras", "4": "Sand", "5": "Schotter",
-    "12": "Trocken", "13": "Wasser", "14": "Schnee/Eis", "15": "Transparent",
-}
+# --- Phase 1 facade: names below now live in the vfr_navlog package. This file
+#     re-exports them so `from navlog import X` and the code still in this module
+#     keep working until the split completes. ---
+from vfr_navlog.config import (  # noqa: E402,F401
+    APT_REL,
+    DEFAULT_XPLANE,
+    FIX_REL,
+    NAV_FALLBACK_REL,
+    NAV_REL,
+    NAVIGRAPH_LDB,
+    SURFACE_NAMES,
+    UNICOM_FREQ,
+    VATSIM_METAR_URL,
+    VATSIM_TAF_URL,
+    VATSIM_UA,
+    VATSIM_URL,
+    _load_env,
+    _smart_output,
+)
+from vfr_navlog.geo import apply_wind, great_circle  # noqa: E402,F401
+from vfr_navlog.geo import haversine_m as _haversine_m  # noqa: E402,F401
+from vfr_navlog.model import (  # noqa: E402,F401
+    AirportInfo,
+    FieldWx,
+    IlsLoc,
+    Leg,
+    ParsedMetar,
+    Plan,
+    Runway,
+    VatsimSnapshot,
+    Waypoint,
+    WeatherBriefing,
+)
 
 
 # ------------------------- fonts -------------------------
@@ -75,67 +86,7 @@ def install_fonts(pdf: FPDF) -> str:
     return "Helvetica"
 
 
-# ------------------------- nav math -------------------------
-
-def great_circle(lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float, float]:
-    """Returns (initial_true_course_deg, distance_nm) between two points."""
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dlon = math.radians(lon2 - lon1)
-
-    # initial bearing
-    y = math.sin(dlon) * math.cos(phi2)
-    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlon)
-    tc = (math.degrees(math.atan2(y, x)) + 360) % 360
-
-    # great-circle distance (haversine), nm
-    a = math.sin((phi2 - phi1) / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlon / 2) ** 2
-    dist_nm = 2 * 3440.065 * math.asin(math.sqrt(a))
-    return tc, dist_nm
-
-
-def apply_wind(tc_deg: float, tas_kt: float, wind_from_deg: float, wind_kt: float) -> tuple[float, float, float]:
-    """Returns (wca_deg, magnetic_heading_no_var, gs_kt). Caller adds magvar."""
-    # wind correction angle: sin(WCA) = (W/TAS) * sin(wind_from - TC)
-    rel = math.radians(wind_from_deg - tc_deg)
-    if tas_kt <= 0:
-        return 0.0, tc_deg, 0.0
-    sin_wca = (wind_kt / tas_kt) * math.sin(rel)
-    sin_wca = max(-1.0, min(1.0, sin_wca))
-    wca = math.degrees(math.asin(sin_wca))
-    th = tc_deg + wca
-    # ground speed
-    gs = math.sqrt(
-        tas_kt ** 2 + wind_kt ** 2 - 2 * tas_kt * wind_kt * math.cos(rel - math.radians(wca))
-    )
-    return wca, th, gs
-
-
 # ------------------------- parsing -------------------------
-
-@dataclass
-class Waypoint:
-    name: str
-    ident: str
-    type: str
-    lat: float
-    lon: float
-    alt_ft: float | None = None
-    region: str | None = None
-    freq: str | None = None
-    vor_info: str | None = None  # free-text VOR/navaid reference, e.g. "233 FROM"
-
-
-@dataclass
-class Plan:
-    waypoints: list[Waypoint]
-    cruise_alt_ft: float
-    flightplan_type: str
-    cycle: str
-    created: str
-    # Optional step-altitude profile: list of (waypoint_ident, alt_ft) pairs in route order.
-    # Each entry means "from this waypoint onwards, cruise at alt_ft."
-    alt_profile: list[tuple[str, float]] = field(default_factory=list)
-
 
 def parse_lnmpln(path: Path) -> Plan:
     tree = ET.parse(path)
@@ -193,17 +144,6 @@ def parse_magvar(s: str) -> float:
 
 
 # ------------------------- VATSIM -------------------------
-
-@dataclass
-class VatsimSnapshot:
-    fetched_at: str
-    update_time: str
-    frequencies: dict[str, dict[str, str]]  # icao -> {role -> "118.300"}
-    atis_text: dict[str, list[str]]         # icao -> raw ATIS lines
-
-    def empty(self) -> bool:
-        return not any(self.frequencies.values())
-
 
 def _normalize_freq(raw: str) -> str:
     """VATSIM returns frequencies as strings like '118.300' already; just clean."""
@@ -312,50 +252,6 @@ def _find_radar_online(
 
 
 # ------------------------- X-Plane nav data -------------------------
-
-@dataclass
-class Runway:
-    ident_a: str
-    ident_b: str
-    surface: str
-    width_m: float
-    length_m: float
-
-
-@dataclass
-class IlsLoc:
-    runway: str
-    ident: str
-    freq_mhz: float
-    type_desc: str
-
-
-@dataclass
-class AirportInfo:
-    icao: str
-    name: str
-    elevation_ft: float = 0.0
-    city: str = ""
-    transition_alt: str = ""
-    transition_level: str = ""
-    iata: str = ""
-    runways: list[Runway] = None  # type: ignore[assignment]
-    ils_locs: list[IlsLoc] = None  # type: ignore[assignment]
-
-    def __post_init__(self):
-        if self.runways is None:
-            self.runways = []
-        if self.ils_locs is None:
-            self.ils_locs = []
-
-
-def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlam = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
-    return 2 * 6371000.0 * math.asin(math.sqrt(a))
-
 
 def parse_airport(apt_path: Path, icao: str) -> AirportInfo | None:
     if not apt_path.exists():
@@ -497,20 +393,6 @@ def find_call_marker(legs: list["Leg"], threshold_nm: float) -> int | None:
 
 
 # ------------------------- leg computation -------------------------
-
-@dataclass
-class Leg:
-    from_wp: Waypoint
-    to_wp: Waypoint
-    tc: float
-    wca: float
-    th: float
-    mh: float
-    distance_nm: float
-    gs_kt: float
-    ete_min: float
-    fuel_l: float
-
 
 def compute_legs(plan: Plan, tas: float, wind: tuple[float, float], magvar: float, burn_lph: float) -> list[Leg]:
     legs: list[Leg] = []
@@ -2141,32 +2023,6 @@ def write_fms(plan: Plan, out_path: Path) -> None:
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-# ------------------------- config / output path -------------------------
-
-def _load_env(path: Path) -> dict[str, str]:
-    """Parse a .env file (KEY=VALUE). Ignores blank lines and # comments."""
-    result: dict[str, str] = {}
-    if not path.exists():
-        return result
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            result[k.strip()] = v.strip().strip('"').strip("'")
-    return result
-
-
-def _smart_output(env: dict[str, str], dep_icao: str, dest_icao: str, ac_type: str) -> Path:
-    base = Path(env.get("NAVLOG_OUTPUT_DIR", ".")).expanduser()
-    subdir = base / f"{dep_icao.upper()}-{dest_icao.upper()}"
-    date_slug = datetime.now().strftime("%Y-%m-%d")
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", ac_type).strip("-").lower()
-    filename = f"navlog_{date_slug}_{slug}.pdf" if slug else f"navlog_{date_slug}.pdf"
-    return subdir / filename
-
-
 # ------------------------- METAR wind helper -------------------------
 
 def fetch_metar(icao: str, timeout: float = 6.0) -> str | None:
@@ -2214,40 +2070,6 @@ def fetch_taf(icao: str, timeout: float = 6.0) -> str | None:
             return text if text else None
     except (urllib.error.URLError, TimeoutError):
         return None
-
-
-@dataclass
-class ParsedMetar:
-    raw: str
-    wind_dir: int | None = None
-    wind_kt: int | None = None
-    wind_gust_kt: int | None = None
-    wind_vrb: bool = False
-    vis_m: int | None = None
-    cavok: bool = False
-    ceiling_ft: int | None = None   # lowest BKN or OVC layer
-    clouds: list = None             # type: ignore[assignment]
-    temp_c: float | None = None
-    dewpoint_c: float | None = None
-    qnh_hpa: int | None = None
-    phenomena: list = None          # type: ignore[assignment]
-
-    def __post_init__(self):
-        if self.clouds is None:
-            self.clouds = []
-        if self.phenomena is None:
-            self.phenomena = []
-
-    def vfr_status(self) -> str:
-        if self.cavok:
-            return "VFR"
-        vis  = self.vis_m      if self.vis_m      is not None else 9999
-        ceil = self.ceiling_ft if self.ceiling_ft is not None else 99999
-        if ceil < 1500 or vis < 3000:
-            return "IFR"
-        if ceil < 3000 or vis < 5000:
-            return "MVFR"
-        return "VFR"
 
 
 def _parse_temp(s: str) -> float:
@@ -2326,19 +2148,6 @@ def parse_metar(raw: str) -> ParsedMetar:
     return result
 
 
-@dataclass
-class WeatherBriefing:
-    dep_icao: str
-    dest_icao: str
-    dep_metar_raw: str | None
-    dest_metar_raw: str | None
-    dep_taf_raw: str | None
-    dest_taf_raw: str | None
-    dep_metar: ParsedMetar | None
-    dest_metar: ParsedMetar | None
-    fetched_at: str
-
-
 def fetch_weather_briefing(dep_icao: str, dest_icao: str) -> WeatherBriefing:
     fetched_at = datetime.now(timezone.utc).strftime("%H:%MZ")
     dep_m  = fetch_metar(dep_icao)
@@ -2363,16 +2172,6 @@ def fetch_weather_briefing(dep_icao: str, dest_icao: str) -> WeatherBriefing:
 # Quelle pro Platz: zuerst der VATSIM-ATIS-Text der online ATIS-Station (falls
 # vorhanden und parsebar), sonst echtes METAR als Fallback. Der Fallback liefert
 # bewusst nur Wind, Temperatur und Druck – Sicht/Wolken bleiben leer.
-
-@dataclass
-class FieldWx:
-    icao: str
-    source: str               # "VATSIM ATIS" oder "METAR (real)"
-    parsed: ParsedMetar       # Wind / Temp / QNH
-    atis_code: str | None = None
-    rwy: str | None = None
-    time_z: str | None = None
-
 
 def parse_atis(lines: list[str]) -> ParsedMetar:
     """Extrahiert Wind, Temperatur und QNH aus dem freien VATSIM-ATIS-Text.
