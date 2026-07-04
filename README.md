@@ -112,8 +112,9 @@ python3 navlog.py \
 | `--vatsim` | off | Fetch live VATSIM data: ATC frequencies, en-route radar, METAR/TAF. |
 | `--dfs-charts` | off | Append VFR charts for the destination from the official DFS AIP. |
 | `--vor-info` | off | Prompt for a free-text VOR reference (e.g. `233 FROM`) per waypoint; prints in the VOR column. |
-| `--wp-maps` | off | Append one openflightmaps chart briefing page per waypoint. Needs network on the first run; tiles are cached. |
-| `--map-radius-nm` | `3` | Chart excerpt radius in NM (clamped 1–5). Only meaningful with `--wp-maps`. |
+| `--wp-maps` | off | Append one briefing page per waypoint with chart and orthophoto side by side. Needs network on the first run; tiles are cached. |
+| `--map-radius-nm` | `3` | Map excerpt radius in NM (clamped 1–5). Only meaningful with `--wp-maps`. |
+| `--map-base` | `both` | Which base layers per waypoint page: `both` (chart + photo), `chart`, or `photo`. Only meaningful with `--wp-maps`. |
 | `--fms` | off | Write an X-Plane FMS v3 flight plan to `Output/FMS plans/`. |
 | `--call-tower-nm` | `10` | NM remaining threshold for the tower-call leg marker. `0` disables. |
 | `--xplane` | macOS Steam default | X-Plane 12 root. Pass `--xplane ""` to skip the destination-briefing page. |
@@ -218,16 +219,31 @@ Reads from X-Plane's local nav data — no internet, no scraping:
 
 Degrades gracefully if the X-Plane files aren't found: comm frequencies and ATIS still appear, runway/ILS sections note the missing data.
 
-## Waypoint map pages (openflightmaps)
+## Waypoint map pages (chart + orthophoto)
 
-With `--wp-maps`, the PDF gains one landscape briefing page per waypoint, in route order, directly after the nav table. Each page pairs a chart excerpt with the numbers you want beside the picture:
+With `--wp-maps`, the PDF gains one landscape briefing page per waypoint, in route order, directly after the nav table. Each page shows **two maps side by side of the same square, same scale**: the openflightmaps chart on the left for airspace and navaids, a photograph on the right for recognition — what the place actually looks like out the window.
 
-- **The excerpt** is a detailed openflightmaps chart centred on the waypoint, with the waypoint's own feature at the crosshair, the route line drawn through it (magenta, white-haloed so it survives the pink airspace tint), a 1 NM scale bar, and a north hint. Radius is `--map-radius-nm` (default 3, clamped 1–5). Departure and destination get pages too — the departure picture for initial orientation, the destination page as an area complement to the DFS aerodrome plates.
-- **The left column** repeats that waypoint's VOR cross-checks (ident, frequency, radial, DME, Morse) and its position in degrees-minutes for the GPS cross-check. A manual `--vor-info` entry overrides the computed fixes, same precedence as the table.
+- **Both maps** are centred on the waypoint at the same radius (`--map-radius-nm`, default 3, clamped 1–5) and carry the same marker at the crosshair, the route line drawn through it (magenta, white-haloed so it survives both the pink airspace tint and a dark orthophoto), a 1 NM scale bar, and a north hint. The aero overlay is on the chart only; the photo stays clean, which is the whole point of having it.
+- **The VOR band** under the header repeats that waypoint's cross-checks (ident, frequency, radial, DME, Morse) laid out horizontally. It collapses entirely when the waypoint has no fixes, giving the maps the full height. A manual `--vor-info` entry overrides the computed fixes, same precedence as the table. The waypoint's position in degrees-minutes sits along the page bottom for the GPS cross-check.
+- **`--map-base both|chart|photo`** (default `both`) picks which halves to draw. `chart` reproduces the old chart-only page full width and never touches the photo endpoints; `photo` does the reverse. If one layer is missing for a given waypoint (no photo coverage, say), that page degrades to the other layer full width; if neither is available, the page is skipped.
 
-Tiles come from the public openflightmaps slippy-tile API (`nwy-tiles-api.prod.newaydata.com`): an opaque JPEG ground layer (z12) with a transparent aero overlay (z11, upscaled ×2) composited on top. The AIRAC cycle is computed from the date; on a publication-lag 404 the run falls back to the previous cycle once. Tiles are cached under `~/.cache/vfr-navlog/ofm/{cycle}/…`, so the first run is network-bound and reruns within a cycle are offline. Fetches are capped at four concurrent, 10 s timeout each. Coverage is regional (Germany plus a set of European regions); a waypoint outside it degrades to a skipped page with one stderr note, never a failed PDF.
+### Base layers
 
-**Attribution and license.** openflightmaps data is published under the [OFMA General Users' License](https://www.openflightmaps.org/) — free use with attribution, similar in spirit to OpenStreetMap. Every map page carries the line `© open flightmaps — OFMA General Users' License — AIRAC {cycle}` with the cycle actually used. This keeps the tool a personal, non-redistributing client of the tile service.
+The **chart** is the openflightmaps composite: an opaque JPEG ground layer (z12) with a transparent aero overlay (z11, upscaled ×2), from the public slippy-tile API (`nwy-tiles-api.prod.newaydata.com`). The AIRAC cycle is computed from the date; on a publication-lag 404 the run falls back to the previous cycle once. Cached under `~/.cache/vfr-navlog/ofm/{cycle}/…`.
+
+The **photo** comes from a cascade, best resolution first:
+
+| Provider | Coverage | Resolution | License / attribution line |
+|----------|----------|-----------|----------------------------|
+| Niedersachsen DOP20 (WMS) | Lower Saxony | 20 cm | `Orthofoto: LGLN (2024) Creative Commons Namensnennung – 4.0 International (CC BY 4.0)` |
+| Nordrhein-Westfalen DOP (WMS) | North Rhine-Westphalia | 20 cm | `Orthofoto: © Geobasis NRW (2024) — Datenlizenz Deutschland Zero 2.0 (dl-de/zero-2-0)` |
+| Sentinel-2 cloudless (EOX, WMTS) | Europe-wide | 10 m | `Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024)` |
+
+Routing is by a rough coverage rectangle per state: a waypoint inside one is served by that state's DOP, everything else falls to Sentinel-2. State WMS servers answer *outside* their real data with a blank white image; that is detected (near-uniform → rejected) and the cascade continues, so a border waypoint that a state doesn't actually cover still gets a Sentinel-2 photo. DOP GetMap responses are cached under `~/.cache/vfr-navlog/dop/` keyed by rounded bbox and size; Sentinel-2 tiles under `~/.cache/vfr-navlog/s2/{layer}/{z}/{x}/{y}.jpg`. This imagery is not AIRAC-bound, so the cache is capped at ~1 year by modification time rather than a cycle key. Fetches are capped at four concurrent per host, 10 s timeout each; any failure yields None and degrades, never a failed PDF.
+
+The DOP20 licence strings above were verified live against each service's `GetCapabilities` on 2026-07-04. The DFS official ICAO 1:500,000 chart is **not** usable here — it lives only behind the login-protected AIS portal (secais.dfs.de); DFS's public geodata service is air-transport-network *vectors*, not the raster chart. The openflightmaps aero rendering is the closest legitimately usable public equivalent.
+
+**Attribution.** openflightmaps data is published under the [OFMA General Users' License](https://www.openflightmaps.org/) — free use with attribution. Every chart carries `© open flightmaps — OFMA General Users' License — AIRAC {cycle}`; every photo carries its provider's licence line verbatim, as a caption directly under the map. The EOX imagery is CC BY-NC-SA 4.0 — fine for this personal, non-redistributing tool.
 
 ## Tower-call marker
 
@@ -252,7 +268,7 @@ Type codes: `1` = airport, `3` = VOR, `2` = NDB, `11` = intersection, `28` = use
 - FIR detection for en-route radar is latitude-based only — coarse, works for German routes.
 - Phraseology pages are tailored to the EDLI→EDDG route (Bremen/Langen FIS, Whiskey VRP at EDDG). Adapt for other routes.
 - DFS chart download (`--dfs-charts`) only covers German airports (ED prefix). Non-German destinations are silently skipped.
-- Waypoint map pages (`--wp-maps`) depend on the community openflightmaps tile endpoint (no SLA) and its regional coverage. Out-of-coverage waypoints are skipped; a hard endpoint outage degrades the whole feature to no pages.
+- Waypoint map pages (`--wp-maps`) depend on public map services (openflightmaps tiles, state DOP WMS, EOX Sentinel-2 WMTS), none with an SLA. State reorganizations can drift a WMS endpoint; each provider fails gracefully to the next or to a skipped page. State orthophoto coverage is currently Niedersachsen and Nordrhein-Westfalen only; everywhere else uses the 10 m Sentinel-2 photo.
 
 ## License
 

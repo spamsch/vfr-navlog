@@ -193,7 +193,7 @@ class RenderContext:
     call_tower_nm: float
     with_dfs_charts: bool
     navaids: list = field(default_factory=list)  # distinct RadialFix per station, for the reference block
-    wp_maps: list = field(default_factory=list)  # per-waypoint WaypointMap | None, in route order
+    wp_maps: list = field(default_factory=list)  # per-waypoint WaypointLayers | None, in route order
 
 
 @dataclass
@@ -221,3 +221,4 @@ class RunConfig:
     vor_fixes: bool = False  # compute automatic VOR radial cross-checks per waypoint
     wp_maps: bool = False    # render per-waypoint OFM chart briefing pages
     map_radius_nm: float = 3.0  # excerpt radius, only meaningful with wp_maps
+    map_base: str = "both"   # "both" | "chart" | "photo"; only meaningful with wp_maps

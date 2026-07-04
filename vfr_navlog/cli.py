@@ -77,6 +77,9 @@ def _build_parser() -> argparse.ArgumentParser:
                          "(needs network on first run; tiles are cached under ~/.cache/vfr-navlog).")
     ap.add_argument("--map-radius-nm", type=float, default=3.0,
                     help="Chart excerpt radius in NM (1–5, default 3). Only meaningful with --wp-maps.")
+    ap.add_argument("--map-base", choices=["both", "chart", "photo"], default="both",
+                    help="Which base layers to render per waypoint page: both (chart + "
+                         "orthophoto, default), chart only, or photo only. Only meaningful with --wp-maps.")
     fpl_grp = ap.add_argument_group("ICAO FPL output  (my.vatsim.net import)")
     fpl_grp.add_argument("--fpl-eobt", default=None, metavar="HHMM",
                          help="Generate ICAO FPL with this EOBT (UTC), e.g. 1030. "
@@ -128,6 +131,7 @@ def _runconfig_from_cli(args: argparse.Namespace) -> RunConfig:
         vor_fixes=args.vor_fixes,
         wp_maps=args.wp_maps,
         map_radius_nm=max(1.0, min(5.0, float(args.map_radius_nm))),
+        map_base=args.map_base,
     )
 
 
@@ -256,14 +260,15 @@ def run(config: RunConfig) -> None:
     if xplane_path:
         dest_info = load_destination_info(plan, xplane_path)
 
-    # Per-waypoint OFM chart excerpts: fetched here (network) so the PDF renderer
-    # only lays out finished images. Degrades to empty on any failure.
+    # Per-waypoint base layers (chart + orthophoto): fetched here (network) so the
+    # PDF renderer only lays out finished images. Degrades to empty on any failure.
     wp_maps: list = []
     if config.wp_maps:
         from datetime import date
 
-        from .ofm import prepare_waypoint_maps
-        wp_maps = prepare_waypoint_maps(plan, config.map_radius_nm, date.today())
+        from .baselayers import prepare_waypoint_layers
+        wp_maps = prepare_waypoint_layers(plan, config.map_radius_nm, date.today(),
+                                          map_base=config.map_base)
 
     if config.output is not None:
         out = config.output
