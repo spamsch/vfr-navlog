@@ -11,7 +11,7 @@ from .config import DEFAULT_XPLANE, PROJECT_ROOT, _load_env, _smart_output
 from .exports import collect_vor_info, format_icao_fpl, write_fms
 from .legs import apply_hemispheric_rule, compute_legs
 from .lnmpln import parse_lnmpln, parse_magvar, parse_wind
-from .model import AirportInfo, FieldWx, VatsimSnapshot, WeatherBriefing
+from .model import AirportInfo, FieldWx, RunConfig, VatsimSnapshot, WeatherBriefing
 from .navigraph import read_navigraph_flight
 from .pdf import render
 from .tui import _tui
@@ -25,7 +25,7 @@ from .weather import (
 from .xplane import load_destination_info
 
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="VFR navlog PDF from a Little Navmap plan or Navigraph Charts."
     )
@@ -71,43 +71,77 @@ def main():
                          help="Alternate aerodrome ICAO (optional).")
     fpl_grp.add_argument("--fpl-pilot", default="", metavar="NAME",
                          help="Pilot surname for FPL field 19C.")
+    return ap
 
+
+def _runconfig_from_cli(args: argparse.Namespace) -> RunConfig:
+    xplane_path = Path(args.xplane) if args.xplane and str(args.xplane).strip() else None
+    alt_profile = [(wp.upper(), float(alt)) for wp, alt in (args.alt_change or [])]
+    fpl_fields = None
+    if args.fpl_eobt:
+        fpl_fields = dict(
+            eobt=args.fpl_eobt,
+            pob=args.fpl_pob,
+            equipment=args.fpl_equipment,
+            wake=args.fpl_wake,
+            alternate=args.fpl_alternate,
+            pilot_name=args.fpl_pilot,
+        )
+    return RunConfig(
+        navigraph=args.navigraph,
+        plan_path=args.plan,
+        aircraft_path=args.aircraft,
+        wind=parse_wind(args.wind),
+        wind_was_default=(args.wind == "0/0"),
+        magvar=parse_magvar(args.magvar),
+        registration=args.registration,
+        cruise_alt_ft=(float(args.cruise_alt) if args.cruise_alt is not None else None),
+        alt_profile=alt_profile,
+        output=args.output,
+        xplane_path=xplane_path,
+        vatsim=args.vatsim,
+        vor_info=args.vor_info,
+        with_dfs_charts=args.dfs_charts,
+        call_tower_nm=args.call_tower_nm,
+        fms=args.fms,
+        fpl_fields=fpl_fields,
+    )
+
+
+def main():
     if not sys.argv[1:]:
-        args = _tui()
+        config = _tui()
     else:
-        args = ap.parse_args()
+        config = _runconfig_from_cli(_build_parser().parse_args())
+    run(config)
 
-    xplane_path: Path | None = Path(args.xplane) if args.xplane and str(args.xplane).strip() else None
 
-    if args.navigraph:
+def run(config: RunConfig) -> None:
+    xplane_path = config.xplane_path
+
+    if config.navigraph:
         plan = read_navigraph_flight(xplane_path)
         source_note = (
             "Erzeugt aus Navigraph Charts — Werte ohne Gewähr. "
             "Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
         )
     else:
-        plan = parse_lnmpln(args.plan)
+        plan = parse_lnmpln(config.plan_path)
         source_note = (
             "Erzeugt aus Little Navmap .lnmpln — Werte ohne Gewähr. "
             "Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
         )
 
-    aircraft = json.loads(args.aircraft.read_text())
-    if getattr(args, "registration", None):
-        aircraft["registration"] = args.registration
-    if getattr(args, "cruise_alt", None) is not None:
-        plan.cruise_alt_ft = float(args.cruise_alt)
-    # TUI sets alt_profile directly; CLI uses --alt-change WP ALT pairs.
-    _tui_profile = getattr(args, "alt_profile", None)
-    if _tui_profile is not None:
-        plan.alt_profile = _tui_profile
-    else:
-        raw_changes = getattr(args, "alt_change", None) or []
-        plan.alt_profile = [(wp.upper(), float(alt)) for wp, alt in raw_changes]
-    wind = parse_wind(args.wind)
-    magvar = parse_magvar(args.magvar)
+    aircraft = json.loads(config.aircraft_path.read_text())
+    if config.registration:
+        aircraft["registration"] = config.registration
+    if config.cruise_alt_ft is not None:
+        plan.cruise_alt_ft = config.cruise_alt_ft
+    plan.alt_profile = config.alt_profile
+    wind = config.wind
+    magvar = config.magvar
 
-    if getattr(args, "vor_info", False):
+    if config.vor_info:
         collect_vor_info(plan)
 
     fir_icaos = _german_firs_for_route(plan.waypoints)
@@ -115,7 +149,7 @@ def main():
     snapshot: VatsimSnapshot | None = None
     briefing: WeatherBriefing | None = None
     field_wx: dict[str, FieldWx] = {}
-    if args.vatsim:
+    if config.vatsim:
         dep_icao  = plan.waypoints[0].ident
         dest_icao = plan.waypoints[-1].ident
         icaos     = [dep_icao, dest_icao]
@@ -150,7 +184,7 @@ def main():
 
         # Ohne explizites --wind den Abflug-Oberflächenwind als Wind aloft nutzen.
         dep_wx = field_wx.get(dep_icao.upper())
-        if args.wind == "0/0" and dep_wx and dep_wx.parsed.wind_kt is not None:
+        if config.wind_was_default and dep_wx and dep_wx.parsed.wind_kt is not None:
             wd = dep_wx.parsed.wind_dir if (dep_wx.parsed.wind_dir is not None
                                             and not dep_wx.parsed.wind_vrb) else 0
             wind = (float(wd), float(dep_wx.parsed.wind_kt))
@@ -166,8 +200,8 @@ def main():
     if xplane_path:
         dest_info = load_destination_info(plan, xplane_path)
 
-    if args.output is not None:
-        out = args.output
+    if config.output is not None:
+        out = config.output
     else:
         env = _load_env(PROJECT_ROOT / ".env")
         out = _smart_output(
@@ -179,10 +213,10 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
 
     render(plan, aircraft, legs, wind, magvar, out,
-           vatsim=snapshot, call_tower_nm=args.call_tower_nm,
+           vatsim=snapshot, call_tower_nm=config.call_tower_nm,
            dest_info=dest_info, source_note=source_note,
            fir_icaos=fir_icaos, weather=briefing,
-           dfs_charts=getattr(args, "dfs_charts", False),
+           dfs_charts=config.with_dfs_charts,
            field_wx=field_wx)
     print(f"Wrote {out}")
     total_d = sum(l.distance_nm for l in legs)
@@ -190,7 +224,7 @@ def main():
     total_f = sum(l.fuel_l for l in legs)
     print(f"Total: {total_d:.1f} NM, {total_t:.0f} min, {total_f:.1f} L (trip only)")
 
-    if getattr(args, "fms", False):
+    if config.fms:
         dep_icao = plan.waypoints[0].ident.upper()
         dest_icao = plan.waypoints[-1].ident.upper()
         fms_name = f"{dep_icao}-{dest_icao}.fms"
@@ -202,22 +236,11 @@ def main():
         print(f"Wrote FMS  {fms_path}")
 
     # ── ICAO FPL ─────────────────────────────────────────────────────────────
-    # Resolve FPL fields from TUI (args.fpl_fields) or from CLI (--fpl-eobt …).
-    fpl_fields: dict | None = getattr(args, "fpl_fields", None)
-    if fpl_fields is None and getattr(args, "fpl_eobt", None):
-        # CLI mode: --fpl-eobt was given; remaining fields from CLI args or defaults.
-        fpl_fields = dict(
-            eobt=args.fpl_eobt,
-            pob=args.fpl_pob,
-            equipment=args.fpl_equipment,
-            wake=args.fpl_wake,
-            alternate=args.fpl_alternate,
-            pilot_name=args.fpl_pilot,
-        )
-
+    # FPL fields were resolved when the RunConfig was built (TUI prompts or --fpl-* flags).
+    fpl_fields = config.fpl_fields
     if fpl_fields is not None:
         import urllib.parse
-        B, C, DIM, R = "\033[1m", "\033[36m", "\033[2m", "\033[0m"
+        B, DIM, R = "\033[1m", "\033[2m", "\033[0m"
         fpl_str = format_icao_fpl(plan, aircraft, legs, **fpl_fields)
         sep = "─" * 62
         print(f"\n{B}ICAO FPL{R}")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -145,3 +146,27 @@ class FieldWx:
     atis_code: str | None = None
     rwy: str | None = None
     time_z: str | None = None
+
+
+@dataclass
+class RunConfig:
+    """A fully-resolved run request. Both cli.main() and tui._tui() produce one;
+    cli.run() consumes it. Replaces the forged argparse.Namespace.
+    """
+    navigraph: bool
+    plan_path: Path | None            # None → Navigraph source
+    aircraft_path: Path
+    wind: tuple[float, float]         # parsed (direction_deg, speed_kt)
+    wind_was_default: bool            # wind arg was the "0/0" default → allow METAR substitution
+    magvar: float
+    registration: str | None
+    cruise_alt_ft: float | None
+    alt_profile: list[tuple[str, float]]
+    output: Path | None
+    xplane_path: Path | None
+    vatsim: bool
+    vor_info: bool
+    with_dfs_charts: bool
+    call_tower_nm: float
+    fms: bool
+    fpl_fields: dict | None

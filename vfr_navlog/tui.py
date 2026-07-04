@@ -1,20 +1,19 @@
-"""Interactive setup wizard: prompts the user and returns an argparse.Namespace."""
+"""Interactive setup wizard: prompts the user and returns a RunConfig."""
 from __future__ import annotations
 
-import argparse
 import json
 import re
 from pathlib import Path
 
 from .config import DEFAULT_XPLANE, PROJECT_ROOT
 from .exports import _ask_fpl_fields
-from .lnmpln import parse_lnmpln
-from .model import Plan
+from .lnmpln import parse_lnmpln, parse_magvar, parse_wind
+from .model import Plan, RunConfig
 from .navigraph import read_navigraph_flight
 from .weather import _wind_from_metar, fetch_metar
 
 
-def _tui() -> argparse.Namespace:
+def _tui() -> RunConfig:
     """Interactive setup wizard, runs when navlog.py is called with no arguments."""
     # Enable readline tab-completion for file paths
     try:
@@ -311,23 +310,22 @@ def _tui() -> argparse.Namespace:
 
     print()
 
-    return argparse.Namespace(
+    return RunConfig(
         navigraph=navigraph,
-        plan=plan_path,
-        aircraft=aircraft_path,
-        wind=wind_str,
-        magvar=magvar_str,
+        plan_path=plan_path,
+        aircraft_path=aircraft_path,
+        wind=parse_wind(wind_str),
+        wind_was_default=(wind_str == "0/0"),
+        magvar=parse_magvar(magvar_str),
+        registration=registration,
+        cruise_alt_ft=cruise_alt_ft,
+        alt_profile=alt_profile,
         output=None,
+        xplane_path=DEFAULT_XPLANE,
         vatsim=vatsim,
         vor_info=vor_info,
-        dfs_charts=dfs_charts,
+        with_dfs_charts=dfs_charts,
         call_tower_nm=10.0,
-        xplane=DEFAULT_XPLANE,
-        registration=registration,
-        cruise_alt=cruise_alt_ft,
-        alt_profile=alt_profile,
         fms=fms,
         fpl_fields=fpl_fields,
-        # CLI FPL args are absent in TUI mode; use None as sentinel
-        fpl_eobt=None,
     )
