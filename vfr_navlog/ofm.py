@@ -314,8 +314,9 @@ def annotate(img: Image.Image, lat: float, lon: float, radius_nm: float,
     draw.rectangle([x0, y0, x1, y1], fill=(0, 0, 0))
     draw.text((x0, y0 - 15), "1 NM", fill=(0, 0, 0), font=fnt)
 
-    # North hint, top-right (tiles are north-up by construction).
-    nx, ny = side - m, m
+    # North hint, top-right (tiles are north-up by construction). Inset by the
+    # arrowhead height + label width so nothing clips the top-right raster edge.
+    nx, ny = side - m - 12, m + 6
     draw.line([(nx - 5, ny + 16), (nx - 5, ny)], fill=(0, 0, 0), width=3)
     draw.polygon([(nx - 5, ny - 4), (nx - 10, ny + 5), (nx, ny + 5)], fill=(0, 0, 0))
     draw.text((nx - 24, ny + 2), "N", fill=(0, 0, 0), font=fnt)
