@@ -11,6 +11,7 @@ dependencies = [
     "fpdf2",
     "requests",
     "img2pdf",
+    "Pillow",
 ]
 
 [project.optional-dependencies]
