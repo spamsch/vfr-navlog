@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LittleNavmap xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://www.littlenavmap.org/schema/lnmpln.xsd">
+  <Flightplan>
+    <Header>
+      <FlightplanType>VFR</FlightplanType>
+      <CruisingAlt>3500</CruisingAlt>
+      <CreationDate>2026-07-04T10:00:00</CreationDate>
+      <Comment/>
+    </Header>
+    <SimData>XP12</SimData>
+    <NavData Cycle="2607"/>
+    <Waypoints>
+      <Waypoint>
+        <Name>Hannover</Name>
+        <Ident>EDDV</Ident>
+        <Region>ED</Region>
+        <Type>AIRPORT</Type>
+        <Pos Lon="9.685077" Lat="52.461140" Alt="183.00"/>
+      </Waypoint>
+      <Waypoint>
+        <Name>Nienburg</Name>
+        <Ident>NIE</Ident>
+        <Region>ED</Region>
+        <Type>WAYPOINT</Type>
+        <Pos Lon="9.213000" Lat="52.646000" Alt="3500.00"/>
+      </Waypoint>
+      <Waypoint>
+        <Name>Bielefeld</Name>
+        <Ident>EDLI</Ident>
+        <Region>ED</Region>
+        <Type>AIRPORT</Type>
+        <Pos Lon="8.544444" Lat="51.964722" Alt="433.00"/>
+      </Waypoint>
+    </Waypoints>
+  </Flightplan>
+</LittleNavmap>

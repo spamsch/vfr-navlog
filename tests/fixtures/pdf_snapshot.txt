@@ -1,0 +1,180 @@
+Flugdurchführungsplan VFR
+Datum
+ 2026-07-04
+von
+ EDDV  Hannover
+nach
+ EDLI  Bielefeld
+LFZ-Muster
+ C172S
+LFZ-Kennz.
+ D-EIYD
+ Freigaben / Wetter / Info  Frequenzen
+ EDDV (Abflug)  EDLI (Ziel)
+ Ground
+ Tower
+ Info / ATIS
+ Radar / FIS
+UNICOM (kein ATC):  122.800 MHz
+ Zeiten (UTC)
+ ETD  ATD
+ ETA  ATA
+ SS
+ Platz  Code  RWY  TL/FL  Zeit UTC  Wind °/kt  Sicht  Wolken  T/Td °C  QNH  Tendenz / Bemerkungen
+  EDDV
+  EDLI
+  Ausweich
+Waypoint VOR
+Info
+Alt
+ft
+TAS
+kt
+Wind
+°/kt
+TC
+°
+WCA
+°
+Var
+°
+MH
+°
+Dist
+NM
+Total
+NM
+GS
+kt
+ETE
+min
+Total
+min
+Fuel
+L
+ETO / ATO
+ EDDV  Hannover  183
+ NIE  Nienburg  4500  93  270/10  303  -3  +4.0  296  20.5  20.5  84  15  15  8.1  → EDLI TWR rufen
+ EDLI  Bielefeld  433  211  +5  213  47.7  68.2  87  33  47  18.2
+TEST SNAPSHOT
+=== PAGE ===
+ Kraftstoffberechnung
+ Anlassen / Rollen      2.0 L
+ Steigflug      3.8 L
+ Reiseflug (Trip)     26.3 L
+ An- / Abflug      5.5 L
+ Ausweichflugplatz      0.0 L
+ Reserve (30 min)     16.6 L
+ Mindest-Kraftstoffbedarf     54.2 L
+ Kraftstoff-Vorrat    201.0 L
+ Extra-Kraftstoff    146.8 L
+ Sichere Flugzeit (max − 30 min)  5:32
+ Planungsannahmen
+ Wind: 270°/10 kt (uniform alle Schenkel)
+ Magnetische Variation: +4.0°
+ AIRAC-Zyklus: 2607
+ TAS Reise: 93 kt
+ Kraftstoffverbrauch: 33.3 L/h
+ Gesamtstrecke: 68.2 NM
+ Gesamtzeit (Reise): 47 min
+ Gesamtkraftstoff (Trip): 26.3 L
+ Ruf EDLI TWR ab NIE (48 NM)
+ Bemerkungen / Unterschrift Pilot
+TEST SNAPSHOT
+=== PAGE ===
+Sprechgruppen VFR  ·  1: FIS Bremen Information
+Templated für D-EIYD (C172S), EDDV → EDLI.  [Eckige Klammern] vor jedem Spruch anpassen.
+Bremen Information (Langen Center) = Fluginformationsdienst, keine Staffelung. Erstanruf: nur Rufzeichen — erst nach Rückfrage die Vollmeldung abgeben. POB immer nennen. Squawk VFR = 7000. Frequenz: AIP / Streckenkarte
+prüfen.
+  A · Erstkontakt & Vollmeldung  ·  Initial contact & full position report
+  Deutsch   English
+PILOT Bremen Information, D-EIYD. Bremen Information, D-EIYD.
+FIS D-EIYD, Bremen Information, bitte melden. D-EIYD, Bremen Information, go ahead.
+PILOT D-EIYD,  C172S,  VFR  von  EDDV  nach  EDLI,  [Position,  z.  B.  10  km  nördlich  Osnabrück],  [2500
+Fuß], [2] Personen an Bord, erbitte Verkehrsinformationen.
+D-EIYD, C172S, VFR from EDDV to EDLI, [position, e.g. 10 km north of Osnabrück], [2500 feet],
+[2] persons on board, request traffic information.
+FIS D-EIYD,  identifiziert,  [2500  Fuß],  QNH  [1018],  Squawk  [7631],  Verkehrsinformationen  soweit
+möglich.
+D-EIYD, identified, [2500 feet], QNH [1018], squawk [7631], traffic information workload permitting.
+PILOT QNH [1018], Squawk [7631], D-EIYD. QNH [1018], squawk [7631], D-EIYD.
+  B · Verkehrsinformation & Frequenzverlassen  ·  Traffic info & leaving FIS
+FIS D-EIYD,  Verkehr,  [Cessna  172,  12  Uhr,  4  Meilen],  entgegenkommend,  [2500  Fuß],  melden  Sie
+Verkehr in Sicht.
+D-EIYD, traffic, [Cessna 172, 12 o'clock, 4 miles], opposite direction, [2500 feet], report traffic in
+sight.
+PILOT Verkehr in Sicht / nicht in Sicht, D-EIYD. Traffic in sight / not in sight, D-EIYD.
+PILOT D-EIYD, erbitte Verlassen der Frequenz. D-EIYD, request frequency change.
+FIS D-EIYD, Frequenzwechsel genehmigt, Squawk VFR, auf Wiederhören. D-EIYD, frequency change approved, squawk 7000, goodbye.
+PILOT Squawk VFR, D-EIYD, auf Wiederhören. Squawk 7000, D-EIYD, goodbye.
+  Mögliche FIS-Antworten  ·  Possible FIS responses
+  Situation   Deutsch   English
+Hohe Arbeitsbelastung
+Workload denial
+D-EIYD,  aufgrund  hoher  Arbeitsbelastung  kein  Fluginformationsdienst  möglich.  Squawk
+7000, auf Wiederhören.
+→  Verstanden, Squawk 7000, D-EIYD.
+D-EIYD, unable to provide FIS due to high workload. Squawk 7000, goodbye.
+→  Roger, squawk 7000, D-EIYD.
+Kein Radarkontakt
+No radar contact
+D-EIYD, kein Radarkontakt. Bitte Position genauer angeben.
+→  D-EIYD, [5 km westlich Mast Steinkimmen], Kurs [120 Grad].
+D-EIYD, no radar contact. Say position more precisely.
+→  D-EIYD, [5 km west of Steinkimmen mast], heading [120].
+POB-Nachfrage
+POB query
+D-EIYD, wie viele Personen an Bord?
+→  [2] Personen an Bord, D-EIYD.
+D-EIYD, persons on board?
+→  [2] persons on board, D-EIYD.
+FIS = Fluginformationsdienst — keine Staffelung, keine Separierung. Frequenzwechsel erst nach Genehmigung. Squawk 7000 beim Verlassen. Quelle: DFS Sprechfunkverfahren / VATSIM Germany KB.
+=== PAGE ===
+Sprechgruppen VFR  ·  2: CTR-Einflug EDLI über Meldepunkt Whiskey
+D-EIYD (C172S), EDDV → EDLI, Einflug über Whiskey, Piste [25].  [Eckige Klammern] anpassen.
+Vorher: ATIS abhören, Buchstaben und QNH notieren, max. Einflughöhe beachten (oft 2000 ft). Erstanruf ca. 10–15 NM vor der CTR-Grenze: nur Rufzeichen — dann warten! Vollmeldung mit ATIS-Buchstabe erst nach Rückfrage.
+  C · Erstkontakt Tower & Einflugfreigabe  ·  Initial call & CTR entry clearance
+  Deutsch   English
+PILOT Bielefeld Tower, D-EIYD. Bielefeld Tower, D-EIYD.
+TWR D-EIYD, Bielefeld Tower, bitte melden. D-EIYD, Bielefeld Tower, go ahead.
+PILOT D-EIYD, C172S, VFR von EDDV, [15 km nordwestlich Whiskey], [2000 Fuß], Information [Alpha]
+erhalten, erbitte Einflug über Whiskey zur Landung.
+D-EIYD, C172S, VFR from EDDV, [15 km northwest of Whiskey], [2000 feet], information [Alpha]
+received, request entry via Whiskey for landing.
+TWR D-EIYD, fliegen Sie in die Kontrollzone über Whiskey, QNH [1018], erwarten Sie Piste [25]. D-EIYD, enter the control zone via Whiskey, QNH [1018], expect runway [25].
+PILOT Einflug über Whiskey, QNH [1018], Piste [25], D-EIYD. Entering via Whiskey, QNH [1018], runway [25], D-EIYD.
+TWR D-EIYD, melden Sie Whiskey. D-EIYD, report Whiskey.
+PILOT Melde Whiskey, D-EIYD. Wilco, D-EIYD.
+  D · Am Meldepunkt Whiskey bis GA-Vorfeld  ·  At Whiskey through to GA apron
+PILOT D-EIYD, Whiskey, [2000 Fuß]. D-EIYD, Whiskey, [2000 feet].
+TWR D-EIYD, fliegen Sie in den [rechten] Gegenanflug Piste [25]. D-EIYD, join [right] downwind runway [25].
+PILOT [Rechter] Gegenanflug Piste [25], D-EIYD. [Right] downwind runway [25], D-EIYD.
+TWR D-EIYD, Wind [250 Grad, 8 Knoten], Piste [25], Landung frei. D-EIYD, wind [250 degrees, 8 knots], runway [25], cleared to land.
+PILOT Piste [25], Landung frei, D-EIYD. Runway [25], cleared to land, D-EIYD.
+PILOT D-EIYD, Piste [25] verlassen über [Alpha]. D-EIYD, runway [25] vacated via [Alpha].
+TWR D-EIYD, rollen Sie zum GA-Vorfeld über [Alpha, Bravo], Squawk Standby. D-EIYD, taxi to GA apron via [Alpha, Bravo], squawk standby.
+PILOT GA-Vorfeld über [Alpha, Bravo], Squawk Standby, D-EIYD. GA apron via [Alpha, Bravo], squawk standby, D-EIYD.
+PILOT D-EIYD, Parkposition erreicht, auf Wiederhören. D-EIYD, on stand, goodbye.
+  Mögliche Tower-Antworten  ·  Possible tower responses
+  Situation   Deutsch   English
+Einflug vorübergehend
+nicht möglich
+D-EIYD, können Sie [5 Minuten] außerhalb der CTR warten?
+→  Warte außerhalb CTR, D-EIYD.
+D-EIYD, can you hold outside the CTR for [5 minutes]?
+→  Holding outside CTR, D-EIYD.
+Squawk-Zuweisung
+Squawk assignment
+Squawk [7023].
+→  Squawk [7023], D-EIYD.
+Squawk [7023].
+→  Squawk [7023], D-EIYD.
+Sequenzierung hinter
+Verkehr  ·  Sequencing
+D-EIYD, Verkehr voraus, [Piper auf Endanflug Piste 25], Verkehr in Sicht?
+→  Verkehr in Sicht, D-EIYD.
+TWR: Folgen Sie dem Verkehr, Piste [25], Landung frei.
+D-EIYD, traffic ahead, [Piper on final runway 25], traffic in sight?
+→  Traffic in sight, D-EIYD.
+TWR: Follow traffic, runway [25], cleared to land.
+CTR-Einflug nur mit ausdrücklicher Freigabe. ATIS vor Erstkontakt abhören. Meldepunkt Whiskey ist EDLI-spezifisch — Bezeichnung vor jedem Flug im Chart prüfen.

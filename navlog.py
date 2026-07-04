@@ -27,11 +27,10 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 
 from fpdf import FPDF
-from io import BytesIO
-
 
 VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
 VATSIM_METAR_URL = "https://metar.vatsim.net/metar.php?id={icao}"
@@ -631,7 +630,7 @@ def _append_dfs_charts(pdf: FPDF, icao: str) -> int:
     Returns the number of pages added. Gracefully skips on any failure.
     """
     try:
-        from dfs_charts import find_chapter_url, list_charts, extract_png
+        from dfs_charts import extract_png, find_chapter_url, list_charts
     except ImportError:
         print("[dfs] dfs_charts.py not found — skipping chart pages", file=sys.stderr)
         return 0
@@ -2673,8 +2672,8 @@ def _tui() -> argparse.Namespace:
     """Interactive setup wizard, runs when navlog.py is called with no arguments."""
     # Enable readline tab-completion for file paths
     try:
-        import readline
         import glob as _glob
+        import readline
         readline.set_completer_delims(" \t\n;")
         readline.parse_and_bind("tab: complete")
         readline.set_completer(
@@ -2858,7 +2857,7 @@ def _tui() -> argparse.Namespace:
             _label = f"{_al}  ({_wp.ident})" if _al else _wp.ident
             print(f"    {_wi + 1:2d}.  {_label}")
     print(f"  Current cruise alt: {int(cruise_alt_ft)} ft from departure.")
-    print(f"  Enter WP ALT pairs for step climbs/descents. Empty line to finish.")
+    print("  Enter WP ALT pairs for step climbs/descents. Empty line to finish.")
     # Build example idents from the actual route: first interior named WP and first GPS alias.
     _ex_dep = _prev_wps[0].ident if _prev_wps else "EDDG"
     _ex_named = next(

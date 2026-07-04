@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vfr-navlog"
+version = "1.0.0"
+description = "LBA-inspired VFR navlog PDF generator from Little Navmap / Navigraph plans."
+requires-python = ">=3.11"
+dependencies = [
+    "fpdf2",
+    "requests",
+    "img2pdf",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pypdf",
+    "ruff",
+]
+
+[project.scripts]
+vfr-navlog = "vfr_navlog.cli:main"
+
+[tool.setuptools]
+py-modules = ["navlog", "dfs_charts"]
+
+[tool.setuptools.packages.find]
+include = ["vfr_navlog*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Keep the automatic-fix surface small; this is a personal tool with hand-tuned code.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # long lines: PDF coordinate math and phraseology strings run long by design
+    "E741",  # ambiguous variable names (l for leg) used throughout
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
