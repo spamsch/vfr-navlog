@@ -4,10 +4,14 @@ from __future__ import annotations
 from fpdf import FPDF
 
 from ..config import UNICOM_FREQ
+from ..fixes import morse
 from ..model import AirportInfo, VatsimSnapshot
 
 
-def render_destination_page(pdf: FPDF, font: str, info: AirportInfo, vatsim: VatsimSnapshot | None) -> None:
+def render_destination_page(
+    pdf: FPDF, font: str, info: AirportInfo,
+    vatsim: VatsimSnapshot | None, navaids=None,
+) -> None:
     pdf.add_page()
     pw = pdf.w - pdf.l_margin - pdf.r_margin
 
@@ -158,6 +162,40 @@ def render_destination_page(pdf: FPDF, font: str, info: AirportInfo, vatsim: Vat
         pdf.cell(pw, 4.5, "  Kein ATIS-Text verfügbar (VATSIM ATIS offline oder --vatsim nicht gesetzt).",
                  border=1, align="C")
         pdf.ln(4.5)
+
+    # ---------- Navaid-Referenz (Morse) ----------
+    # One line per distinct VOR used for the route's radial fixes. You identify a
+    # VOR by its Morse before trusting it; putting the pattern here closes that loop.
+    if navaids:
+        pdf.ln(2)
+        pdf.set_font(font, "B", 9)
+        pdf.set_fill_color(225, 235, 225)
+        pdf.cell(pw, 5, "  Navaid-Referenz  ·  VOR identification (Morse)", border=1, fill=True)
+        pdf.ln(5)
+        nav_cols = [
+            ("Ident", 20, "C"),
+            ("Name", pw - 20 - 22 - 16 - 60, "L"),
+            ("Freq", 22, "C"),
+            ("DME", 16, "C"),
+            ("Morse", 60, "L"),
+        ]
+        pdf.set_font(font, "B", 8)
+        pdf.set_fill_color(240, 240, 240)
+        for name, w, _ in nav_cols:
+            pdf.cell(w, 5, " " + name, border=1, fill=True)
+        pdf.ln(5)
+        for fx in navaids:
+            values = [
+                fx.vor_ident,
+                fx.vor_name,
+                fx.freq,
+                "DME" if fx.has_dme else "—",
+                morse(fx.vor_ident),
+            ]
+            for (_, w, align), val in zip(nav_cols, values):
+                pdf.set_font(font, "" if align != "C" else "B", 8)
+                pdf.cell(w, 5, " " + str(val), border=1, align=align)
+            pdf.ln(5)
 
     # Footer
     pdf.set_y(pdf.h - pdf.b_margin - 4)

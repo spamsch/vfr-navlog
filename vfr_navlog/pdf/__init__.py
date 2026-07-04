@@ -23,7 +23,7 @@ def render(ctx: RenderContext, out: Path) -> None:
     render_phraseology(pdf, font, ctx.plan, ctx.aircraft, ctx.vatsim, ctx.fir_icaos or [])
 
     if ctx.dest_info is not None:
-        render_destination_page(pdf, font, ctx.dest_info, ctx.vatsim)
+        render_destination_page(pdf, font, ctx.dest_info, ctx.vatsim, ctx.navaids)
 
     if ctx.weather is not None:
         render_weather_page(pdf, font, ctx.weather, fir_icaos=ctx.fir_icaos, vatsim=ctx.vatsim)

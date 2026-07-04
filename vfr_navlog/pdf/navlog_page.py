@@ -8,6 +8,16 @@ from ..weather import _wx_ttd_cell, _wx_wind_cell
 from .base import fmt_int
 
 
+def _fix_line(fx) -> str:
+    """One VOR cross-check line for the nav-table cell: 'HLZ 116.30 R245'."""
+    if fx.overhead:
+        return f"{fx.vor_ident} {fx.freq} ↑ overhead"
+    line = f"{fx.vor_ident} {fx.freq} R{fx.radial:03d}"
+    if fx.has_dme:
+        line += f" {fx.dist_nm:.0f}nm"
+    return line
+
+
 def render_navlog_page(pdf, font, ctx, date_str: str) -> None:
     """Draw the first (navlog) page and its fuel/planning summary."""
     pw = pdf.w - pdf.l_margin - pdf.r_margin
@@ -242,8 +252,8 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
                     nav_y, call_leg_idx, call_text, _note_text, usable_bottom):
     # ---------- nav table ----------
     columns = [
-        ("Waypoint",        56, "L"),
-        ("VOR\nInfo",       24, "C"),
+        ("Waypoint",        46, "L"),
+        ("VOR\nInfo",       34, "C"),
         ("Alt\nft",         12, "C"),
         ("TAS\nkt",         12, "C"),
         ("Wind\n°/kt",      16, "C"),
@@ -266,6 +276,7 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
 
     # Columns the pilot actively scans in cruise; printed larger + bold.
     highlight = {"TC\n°", "MH\n°", "Dist\nNM", "ETE\nmin", "GS\nkt"}
+    vor_col_idx = next(i for i, (n, _, _) in enumerate(columns) if n.startswith("VOR"))
 
     header_h = 8
     row_h = 6.5
@@ -341,6 +352,15 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
         else:
             row = [""] * len(columns)
 
+        # Computed VOR cross-checks for this waypoint. Manual vor_info text (put
+        # into the fallback string above) overrides them; that is why we clear
+        # the list when vor_info is set. Precedence: vor_info > fixes > freq.
+        if i < len(plan.waypoints):
+            _wp = plan.waypoints[i]
+            row_fixes = [] if _wp.vor_info else _wp.fixes
+        else:
+            row_fixes = []
+
         # If this row is the tower-call marker, inject the call annotation into
         # the last (ETO / ATO) cell.
         is_call_row = (call_leg_idx is not None and i == call_leg_idx and i < len(plan.waypoints) - 1)
@@ -354,6 +374,14 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
                 pdf.set_text_color(180, 0, 0)
                 pdf.cell(w, row_h, " " + call_text, border=1, align="L", fill=True)
                 pdf.set_text_color(0, 0, 0)
+            elif col_idx == vor_col_idx and row_fixes:
+                # Up to two fixes stacked in the cell at 6.5 pt.
+                pdf.cell(w, row_h, "", border=1, fill=True)
+                pdf.set_font(font, "", 6.5)
+                line_h = row_h / 2
+                for li, fx in enumerate(row_fixes[:2]):
+                    pdf.set_xy(cx + 0.5, ry + li * line_h + 0.3)
+                    pdf.cell(w - 1.0, line_h, _fix_line(fx), border=0, align="L")
             elif name in highlight:
                 pdf.set_font(font, "B", 10)
                 pdf.cell(w, row_h, " " + str(val) if val else "", border=1, align=align, fill=True)
