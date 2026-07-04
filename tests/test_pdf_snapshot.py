@@ -11,8 +11,9 @@ from pathlib import Path
 import pypdf
 import pytest
 
-import navlog
 import vfr_navlog.pdf
+from vfr_navlog.legs import apply_hemispheric_rule, compute_legs
+from vfr_navlog.lnmpln import parse_lnmpln
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SNAPSHOT = FIXTURES / "pdf_snapshot.txt"
@@ -25,7 +26,7 @@ class _FrozenDateTime(datetime):
 
 
 def _render_text(tmp_path: Path) -> str:
-    plan = navlog.parse_lnmpln(FIXTURES / "sample.lnmpln")
+    plan = parse_lnmpln(FIXTURES / "sample.lnmpln")
     aircraft = {
         "type": "C172S",
         "icao_type": "C172",
@@ -37,11 +38,11 @@ def _render_text(tmp_path: Path) -> str:
     }
     wind = (270.0, 10.0)
     magvar = 4.0
-    legs = navlog.compute_legs(plan, aircraft["performance"]["tas_cruise"], wind, magvar,
-                               aircraft["performance"]["fuel_burn_cruise_lph"])
-    navlog.apply_hemispheric_rule(plan, legs)
+    legs = compute_legs(plan, aircraft["performance"]["tas_cruise"], wind, magvar,
+                        aircraft["performance"]["fuel_burn_cruise_lph"])
+    apply_hemispheric_rule(plan, legs)
     out = tmp_path / "navlog.pdf"
-    navlog.render(
+    vfr_navlog.pdf.render(
         plan, aircraft, legs, wind, magvar, out,
         vatsim=None, call_tower_nm=10.0, dest_info=None,
         source_note="TEST SNAPSHOT", fir_icaos=[], weather=None,
@@ -53,9 +54,8 @@ def _render_text(tmp_path: Path) -> str:
 
 @pytest.fixture(autouse=True)
 def _freeze_time(monkeypatch):
-    # render() reads datetime from the pdf module after the package split.
+    # render() reads datetime from the pdf package module.
     monkeypatch.setattr(vfr_navlog.pdf, "datetime", _FrozenDateTime)
-    monkeypatch.setattr(navlog, "datetime", _FrozenDateTime)
 
 
 def test_pdf_text_snapshot(tmp_path):

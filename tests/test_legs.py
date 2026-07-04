@@ -1,11 +1,7 @@
 import pytest
 
-from navlog import (
-    apply_hemispheric_rule,
-    compute_legs,
-    hemispheric_alt,
-    parse_lnmpln,
-)
+from vfr_navlog.legs import apply_hemispheric_rule, compute_legs, hemispheric_alt
+from vfr_navlog.lnmpln import parse_lnmpln
 
 
 def _plan(sample_plan_path):

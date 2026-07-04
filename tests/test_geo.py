@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from navlog import apply_wind, great_circle
+from vfr_navlog.geo import apply_wind, great_circle
 
 
 def test_great_circle_due_east():

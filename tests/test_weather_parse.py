@@ -1,4 +1,4 @@
-from navlog import parse_atis, parse_metar
+from vfr_navlog.weather import parse_atis, parse_metar
 
 
 def test_parse_metar_basic():

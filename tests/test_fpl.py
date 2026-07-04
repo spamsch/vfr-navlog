@@ -1,5 +1,8 @@
 
-from navlog import compute_legs, fmt_int, format_icao_fpl, hms, parse_lnmpln
+from vfr_navlog.exports import format_icao_fpl
+from vfr_navlog.legs import compute_legs
+from vfr_navlog.lnmpln import parse_lnmpln
+from vfr_navlog.pdf.base import fmt_int, hms
 
 AIRCRAFT = {
     "type": "C172S",

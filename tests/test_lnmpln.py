@@ -1,6 +1,6 @@
 import pytest
 
-from navlog import parse_lnmpln, parse_magvar, parse_wind
+from vfr_navlog.lnmpln import parse_lnmpln, parse_magvar, parse_wind
 
 
 def test_parse_lnmpln(sample_plan_path):
