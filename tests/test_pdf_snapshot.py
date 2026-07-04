@@ -14,6 +14,7 @@ import pytest
 import vfr_navlog.pdf
 from vfr_navlog.legs import apply_hemispheric_rule, compute_legs
 from vfr_navlog.lnmpln import parse_lnmpln
+from vfr_navlog.model import RenderContext
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SNAPSHOT = FIXTURES / "pdf_snapshot.txt"
@@ -42,12 +43,13 @@ def _render_text(tmp_path: Path) -> str:
                         aircraft["performance"]["fuel_burn_cruise_lph"])
     apply_hemispheric_rule(plan, legs)
     out = tmp_path / "navlog.pdf"
-    vfr_navlog.pdf.render(
-        plan, aircraft, legs, wind, magvar, out,
-        vatsim=None, call_tower_nm=10.0, dest_info=None,
-        source_note="TEST SNAPSHOT", fir_icaos=[], weather=None,
-        dfs_charts=False, field_wx={},
+    ctx = RenderContext(
+        plan=plan, aircraft=aircraft, legs=legs, wind=wind, magvar=magvar,
+        vatsim=None, dest_info=None, weather=None, field_wx={},
+        fir_icaos=[], source_note="TEST SNAPSHOT", call_tower_nm=10.0,
+        with_dfs_charts=False,
     )
+    vfr_navlog.pdf.render(ctx, out)
     reader = pypdf.PdfReader(str(out))
     return "\n=== PAGE ===\n".join(page.extract_text() for page in reader.pages)
 

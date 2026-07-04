@@ -11,7 +11,14 @@ from .config import DEFAULT_XPLANE, PROJECT_ROOT, _load_env, _smart_output
 from .exports import collect_vor_info, format_icao_fpl, write_fms
 from .legs import apply_hemispheric_rule, compute_legs
 from .lnmpln import parse_lnmpln, parse_magvar, parse_wind
-from .model import AirportInfo, FieldWx, RunConfig, VatsimSnapshot, WeatherBriefing
+from .model import (
+    AirportInfo,
+    FieldWx,
+    RenderContext,
+    RunConfig,
+    VatsimSnapshot,
+    WeatherBriefing,
+)
 from .navigraph import read_navigraph_flight
 from .pdf import render
 from .tui import _tui
@@ -212,12 +219,13 @@ def run(config: RunConfig) -> None:
         )
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    render(plan, aircraft, legs, wind, magvar, out,
-           vatsim=snapshot, call_tower_nm=config.call_tower_nm,
-           dest_info=dest_info, source_note=source_note,
-           fir_icaos=fir_icaos, weather=briefing,
-           dfs_charts=config.with_dfs_charts,
-           field_wx=field_wx)
+    ctx = RenderContext(
+        plan=plan, aircraft=aircraft, legs=legs, wind=wind, magvar=magvar,
+        vatsim=snapshot, dest_info=dest_info, weather=briefing, field_wx=field_wx,
+        fir_icaos=fir_icaos, source_note=source_note,
+        call_tower_nm=config.call_tower_nm, with_dfs_charts=config.with_dfs_charts,
+    )
+    render(ctx, out)
     print(f"Wrote {out}")
     total_d = sum(l.distance_nm for l in legs)
     total_t = sum(l.ete_min for l in legs)

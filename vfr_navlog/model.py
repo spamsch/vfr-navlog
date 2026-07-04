@@ -149,6 +149,24 @@ class FieldWx:
 
 
 @dataclass
+class RenderContext:
+    """Everything render() needs, in one object instead of 14 positional params."""
+    plan: Plan
+    aircraft: dict
+    legs: list[Leg]
+    wind: tuple[float, float]
+    magvar: float
+    vatsim: VatsimSnapshot | None
+    dest_info: AirportInfo | None
+    weather: WeatherBriefing | None
+    field_wx: dict[str, FieldWx]
+    fir_icaos: list[str]
+    source_note: str
+    call_tower_nm: float
+    with_dfs_charts: bool
+
+
+@dataclass
 class RunConfig:
     """A fully-resolved run request. Both cli.main() and tui._tui() produce one;
     cli.run() consumes it. Replaces the forged argparse.Namespace.
