@@ -5,6 +5,8 @@ import argparse
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import DEFAULT_XPLANE, PROJECT_ROOT, _load_env, _smart_output
@@ -26,7 +28,9 @@ from .vatsim import _german_firs_for_route, fetch_vatsim
 from .weather import (
     _wx_ttd_cell,
     _wx_wind_cell,
-    fetch_weather_briefing,
+    briefing_from_raws,
+    fetch_metar,
+    fetch_taf,
     field_weather,
 )
 from .xplane import load_destination_info
@@ -161,7 +165,25 @@ def run(config: RunConfig) -> None:
         dest_icao = plan.waypoints[-1].ident
         icaos     = [dep_icao, dest_icao]
         all_icaos = icaos + [f for f in fir_icaos if f not in icaos]
-        snapshot  = fetch_vatsim(all_icaos)
+
+        # All of these are independent, each with its own 6 s timeout — fetch
+        # them concurrently so the worst case is one window, not the sum.
+        print(f"[weather] fetching METAR/TAF for {dep_icao}, {dest_icao}…")
+        fetched_at = datetime.now(timezone.utc).strftime("%H:%MZ")
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            f_snapshot = ex.submit(fetch_vatsim, all_icaos)
+            f_dep_m    = ex.submit(fetch_metar, dep_icao)
+            f_dest_m   = ex.submit(fetch_metar, dest_icao)
+            f_dep_t    = ex.submit(fetch_taf, dep_icao)
+            f_dest_t   = ex.submit(fetch_taf, dest_icao)
+        snapshot = f_snapshot.result()
+        briefing = briefing_from_raws(
+            dep_icao, dest_icao,
+            f_dep_m.result(), f_dest_m.result(),
+            f_dep_t.result(), f_dest_t.result(),
+            fetched_at,
+        )
+
         if snapshot is not None:
             for icao in icaos:
                 got = snapshot.frequencies.get(icao.upper(), {})
@@ -175,8 +197,6 @@ def run(config: RunConfig) -> None:
                     print(f"[vatsim] {fir}: " + ", ".join(f"{k}={v}" for k, v in got.items()))
                 else:
                     print(f"[vatsim] {fir}: no radar online")
-        print(f"[weather] fetching METAR/TAF for {dep_icao}, {dest_icao}…")
-        briefing = fetch_weather_briefing(dep_icao, dest_icao)
         for icao, pm in [(dep_icao, briefing.dep_metar), (dest_icao, briefing.dest_metar)]:
             if pm:
                 print(f"[weather] {icao}: {pm.vfr_status()}  ceiling={pm.ceiling_ft} ft  vis={pm.vis_m} m  QNH={pm.qnh_hpa}")

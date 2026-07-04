@@ -152,12 +152,15 @@ def parse_metar(raw: str) -> ParsedMetar:
     return result
 
 
-def fetch_weather_briefing(dep_icao: str, dest_icao: str) -> WeatherBriefing:
-    fetched_at = datetime.now(timezone.utc).strftime("%H:%MZ")
-    dep_m  = fetch_metar(dep_icao)
-    dest_m = fetch_metar(dest_icao)
-    dep_t  = fetch_taf(dep_icao)
-    dest_t = fetch_taf(dest_icao)
+def briefing_from_raws(dep_icao: str, dest_icao: str,
+                       dep_m: str | None, dest_m: str | None,
+                       dep_t: str | None, dest_t: str | None,
+                       fetched_at: str) -> WeatherBriefing:
+    """Assemble a WeatherBriefing from already-fetched raw METAR/TAF text.
+
+    Separated from fetch_weather_briefing so the caller can fetch the four
+    endpoints in parallel and still build the briefing the same way.
+    """
     return WeatherBriefing(
         dep_icao=dep_icao.upper(),
         dest_icao=dest_icao.upper(),
@@ -169,6 +172,15 @@ def fetch_weather_briefing(dep_icao: str, dest_icao: str) -> WeatherBriefing:
         dest_metar=parse_metar(dest_m) if dest_m else None,
         fetched_at=fetched_at,
     )
+
+
+def fetch_weather_briefing(dep_icao: str, dest_icao: str) -> WeatherBriefing:
+    fetched_at = datetime.now(timezone.utc).strftime("%H:%MZ")
+    dep_m  = fetch_metar(dep_icao)
+    dest_m = fetch_metar(dest_icao)
+    dep_t  = fetch_taf(dep_icao)
+    dest_t = fetch_taf(dest_icao)
+    return briefing_from_raws(dep_icao, dest_icao, dep_m, dest_m, dep_t, dest_t, fetched_at)
 
 
 # ------------------------- field weather (ATIS / METAR) -------------------------
