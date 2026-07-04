@@ -3,10 +3,11 @@
 One landscape page per waypoint that has at least one prepared map, in route
 order, inserted directly after the nav table. Layout:
 
-    header strip          — WP n/N, ident, name, altitude, in/out headings
+    header strip          — WP n/N, ident, name
     VOR fix band          — full width under the header; collapses when empty
     two maps side by side  — chart (left) + photo (right), ~equal squares
     per-map captions       — the OFM cycle line and the photo licence line
+    flight data band       — altitude and in/out headings, large print
 
 Degrades cleanly: photo missing → chart alone, full width; chart missing →
 photo alone, full width; neither → the orchestrator returned None and the page
@@ -64,7 +65,7 @@ def _render_one(pdf, font, ctx, i, wp, wl, plan, legs, n) -> None:
     pdf.set_xy(x0, y0)
     pdf.set_font(font, "B", 13)
     title = f"WP {i + 1}/{n}   ·   {wp.ident}   {wp.name}"
-    pdf.cell(pw * 0.55, 7, title, border=0)
+    pdf.cell(pw, 7, title, border=0)
 
     # Altitude at this waypoint: departure/destination show field elevation,
     # interior waypoints the effective cruise altitude of the outbound leg.
@@ -72,14 +73,6 @@ def _render_one(pdf, font, ctx, i, wp, wl, plan, legs, n) -> None:
         alt = _effective_leg_alt(plan, i)
     else:
         alt = wp.alt_ft or 0
-    pdf.set_font(font, "", 9)
-    pdf.set_xy(x0 + pw * 0.55, y0)
-    parts = [f"Alt {fmt_int(alt)} ft"]
-    if inbound is not None:
-        parts.append(f"in MH {fmt_int(inbound.mh):>03}°  {inbound.distance_nm:.1f} NM  {hms(inbound.ete_min)}")
-    if outbound is not None:
-        parts.append(f"out MH {fmt_int(outbound.mh):>03}°")
-    pdf.cell(pw * 0.45, 7, "   ".join(parts), border=0, align="R")
     pdf.ln(8)
     pdf.set_draw_color(120, 120, 120)
     pdf.line(x0, y0 + 8.5, x0 + pw, y0 + 8.5)
@@ -90,11 +83,14 @@ def _render_one(pdf, font, ctx, i, wp, wl, plan, legs, n) -> None:
     band_h = _render_fix_band(pdf, font, x0, body_top, pw, wp)
     maps_top = body_top + band_h + (2 if band_h else 0)
 
-    # Coordinate strip (GPS cross-check), pinned to the page bottom.
+    # Coordinate strip (GPS cross-check), pinned to the page bottom, with the
+    # large flight-data band directly above it.
     coord_h = 5.0
     caption_h = 8.0
+    strip_h = 14.5
     coord_y = pdf.h - pdf.b_margin - coord_h
-    maps_bottom = coord_y - caption_h - 2
+    strip_y = coord_y - strip_h - 1.5
+    maps_bottom = strip_y - caption_h - 2
 
     # ---------- maps: chart left, photo right (whichever is present) ----------
     avail_h = maps_bottom - maps_top
@@ -114,11 +110,44 @@ def _render_one(pdf, font, ctx, i, wp, wl, plan, legs, n) -> None:
         left = x0 + (pw - side) / 2.0
         _place_map(pdf, img, left, maps_top, side, attr, font, caption_h)
 
+    # ---------- flight data band (large print, below the maps) ----------
+    _render_data_strip(pdf, font, x0, strip_y, pw, alt, inbound, outbound)
+
     # ---------- coordinate strip (bottom-left) ----------
     pdf.set_xy(x0, coord_y)
     pdf.set_font(font, "", 8)
     coords = f"  {_dms(wp.lat, 'N', 'S')}    {_dms(wp.lon, 'E', 'W')}"
     pdf.cell(pw, coord_h, coords, border=0)
+
+
+def _render_data_strip(pdf, font, x, y, w, alt, inbound, outbound) -> None:
+    """The numbers scanned in cruise — altitude, inbound heading/distance/time,
+    outbound heading — in large print. The inbound segment gets more width; it
+    carries three values. Departure has no inbound, destination no outbound."""
+    segs = [("Höhe  ·  Alt", f"{fmt_int(alt)} ft", 1.0)]
+    if inbound is not None:
+        segs.append((
+            "Anflug  ·  inbound",
+            f"MH {fmt_int(inbound.mh):>03}°    {inbound.distance_nm:.1f} NM    {hms(inbound.ete_min)}",
+            2.4,
+        ))
+    if outbound is not None:
+        segs.append(("Abflug  ·  outbound", f"MH {fmt_int(outbound.mh):>03}°", 1.0))
+
+    total = sum(wt for _, _, wt in segs)
+    label_h = 4.5
+    value_h = 10.0
+    cx = x
+    for label, value, wt in segs:
+        cw = w * wt / total
+        pdf.set_xy(cx, y)
+        pdf.set_font(font, "B", 8)
+        pdf.set_fill_color(235, 235, 235)
+        pdf.cell(cw, label_h, f"  {label}", border=1, fill=True)
+        pdf.set_xy(cx, y + label_h)
+        pdf.set_font(font, "B", 20)
+        pdf.cell(cw, value_h, f"  {value}", border=1)
+        cx += cw
 
 
 def _place_map(pdf, image, x, y, side, attribution, font, caption_h) -> None:
