@@ -21,13 +21,34 @@ Five core pages, plus optional DFS airport chart pages appended at the end:
 
 ## Install
 
-Python 3.10+ and the required packages:
+Python 3.11+. The code lives in the `vfr_navlog` package; install it (editable is convenient for a personal checkout):
 
 ```
-pip install fpdf2 requests img2pdf Pillow
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e '.[dev]'
 ```
 
-On macOS the script registers `Arial.ttf` from `/System/Library/Fonts/Supplemental/` so umlauts render. On other platforms it falls back to core Helvetica.
+`pip install -e '.'` pulls the runtime dependencies (`fpdf2`, `requests`, `img2pdf`) declared in `pyproject.toml`; the `[dev]` extra adds `pytest`, `pypdf`, and `ruff` for the test suite. If you prefer not to install the package, `pip install fpdf2 requests img2pdf Pillow` still covers the runtime.
+
+Installing the package puts a `vfr-navlog` console script on your `PATH`. Both entry points are equivalent:
+
+```
+vfr-navlog --plan plan.lnmpln --aircraft aircraft_c172.json
+python3 navlog.py --plan plan.lnmpln --aircraft aircraft_c172.json
+```
+
+`navlog.py` is a thin shim over `vfr_navlog.cli:main`, kept so the old `python3 navlog.py …` invocation keeps working. The examples below use `python3 navlog.py`; swap in `vfr-navlog` freely.
+
+On macOS the tool registers `Arial.ttf` from `/System/Library/Fonts/Supplemental/` so umlauts render. On other platforms it falls back to core Helvetica.
+
+### Tests
+
+```
+.venv/bin/pytest
+```
+
+Every network feature is stubbed or off in the tests — the suite makes no outbound calls.
 
 ### Navigraph Charts source (macOS only)
 

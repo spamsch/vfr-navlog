@@ -149,7 +149,7 @@ def collect_vor_info(plan: Plan) -> None:
     """
     if not sys.stdin.isatty():
         return
-    B, C, G, DIM, R = "\033[1m", "\033[36m", "\033[32m", "\033[2m", "\033[0m"
+    B, C, DIM, R = "\033[1m", "\033[36m", "\033[2m", "\033[0m"
     print(f"\n{B}{C}VOR-Informationen je Wegpunkt{R}")
     print(f"{DIM}Freitext pro Wegpunkt, z. B. \"233 FROM\" oder \"FRD R088\". "
           f"Enter lässt einen Punkt leer.{R}")
