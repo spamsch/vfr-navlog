@@ -2,24 +2,20 @@
 from __future__ import annotations
 
 import re
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 
-from .config import VATSIM_METAR_URL, VATSIM_TAF_URL, VATSIM_UA
+from .config import VATSIM_METAR_URL, VATSIM_TAF_URL
 from .model import FieldWx, ParsedMetar, VatsimSnapshot, WeatherBriefing
+from .net import fetch
 
 
 def fetch_metar(icao: str, timeout: float = 6.0) -> str | None:
     """Fetch a raw METAR from VATSIM's METAR endpoint. Returns None on failure."""
-    url = VATSIM_METAR_URL.format(icao=icao.upper())
-    req = urllib.request.Request(url, headers={"User-Agent": VATSIM_UA})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            text = resp.read().decode("utf-8").strip()
-            return text if text else None
-    except (urllib.error.URLError, TimeoutError):
+    body = fetch(VATSIM_METAR_URL.format(icao=icao.upper()), timeout=timeout)
+    if body is None:
         return None
+    text = body.strip()
+    return text if text else None
 
 
 def _wind_from_metar(metar: str) -> tuple[float, float] | None:
@@ -45,14 +41,11 @@ def _wind_from_metar(metar: str) -> tuple[float, float] | None:
 
 def fetch_taf(icao: str, timeout: float = 6.0) -> str | None:
     """Fetch a raw TAF from VATSIM's TAF endpoint. Returns None on failure."""
-    url = VATSIM_TAF_URL.format(icao=icao.upper())
-    req = urllib.request.Request(url, headers={"User-Agent": VATSIM_UA})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            text = resp.read().decode("utf-8").strip()
-            return text if text else None
-    except (urllib.error.URLError, TimeoutError):
+    body = fetch(VATSIM_TAF_URL.format(icao=icao.upper()), timeout=timeout)
+    if body is None:
         return None
+    text = body.strip()
+    return text if text else None
 
 
 def _parse_temp(s: str) -> float:

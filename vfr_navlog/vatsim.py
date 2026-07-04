@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import json
 import sys
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 
-from .config import VATSIM_UA, VATSIM_URL
+from .config import VATSIM_URL
 from .model import VatsimSnapshot, Waypoint
+from .net import fetch
 
 
 def _normalize_freq(raw: str) -> str:
@@ -20,11 +19,13 @@ def _normalize_freq(raw: str) -> str:
 
 def fetch_vatsim(icaos: list[str], timeout: float = 6.0) -> VatsimSnapshot | None:
     """Single GET against the VATSIM data feed; pick out GND/TWR/ATIS/DEL/APP for each ICAO."""
-    req = urllib.request.Request(VATSIM_URL, headers={"User-Agent": VATSIM_UA})
+    body = fetch(VATSIM_URL, timeout=timeout)
+    if body is None:
+        print("[vatsim] fetch failed: network error", file=sys.stderr)
+        return None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        payload = json.loads(body)
+    except json.JSONDecodeError as e:
         print(f"[vatsim] fetch failed: {e}", file=sys.stderr)
         return None
 
