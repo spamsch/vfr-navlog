@@ -149,6 +149,31 @@ def _is_blank(img: Image.Image, tol: int = 8) -> bool:
     return all(hi - lo <= tol for lo, hi in ex)
 
 
+# A state WMS answering a bbox that straddles its border returns imagery on its
+# own side and white fill on the other (seen live: Minden, right at the NI/NRW
+# line — NI answered ~70% white). That must cascade too; a page whose marker
+# sits in a white void is worse than the 10 m Sentinel-2 photo. Threshold
+# rationale: legitimate white in an orthophoto is buildings, greenhouses,
+# gravel pits — single-digit percent of a 6 nm square even over industrial
+# areas; border fill is the whole missing state, typically 30%+. 25% separates
+# the two with margin on both sides.
+_WHITE_FRACTION_MAX = 0.25
+
+
+def _insufficient_coverage(img: Image.Image) -> bool:
+    """True when *img* is unusable as the photo half: fully blank (fast path,
+    catches non-white uniform fills too) or more than _WHITE_FRACTION_MAX
+    near-white. Near-white = every channel >= 250, counted on a 128x128
+    downsampled copy — plenty to estimate an area fraction, and O(1)."""
+    if _is_blank(img):
+        return True
+    small = img.convert("RGB").resize((128, 128), Image.BILINEAR)
+    px = small.load()
+    white = sum(1 for y in range(128) for x in range(128)
+                if px[x, y][0] >= 250 and px[x, y][1] >= 250 and px[x, y][2] >= 250)
+    return white / (128 * 128) > _WHITE_FRACTION_MAX
+
+
 # --- Chart adapter ---------------------------------------------------------
 
 @dataclass
@@ -219,7 +244,7 @@ class DopWms:
             img = Image.open(io.BytesIO(blob)).convert("RGB")
         except Exception:
             return None
-        if _is_blank(img):
+        if _insufficient_coverage(img):
             return None
         return img
 

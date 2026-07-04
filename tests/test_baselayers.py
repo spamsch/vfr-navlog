@@ -30,8 +30,20 @@ def _photo_jpeg(size=(256, 256)) -> bytes:
     return buf.getvalue()
 
 
+def _half_white_jpeg(size=(256, 256)) -> bytes:
+    """A border-straddling WMS answer: real imagery on one half, white fill on
+    the other — what a state server returns for a bbox reaching across its
+    border (seen live: NI at Minden, right on the NI/NRW line)."""
+    img = Image.open(io.BytesIO(_photo_jpeg(size))).convert("RGB")
+    img.paste((255, 255, 255), (0, 0, size[0] // 2, size[1]))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
 PHOTO_BLOB = _photo_jpeg()          # a real, wide-range JPEG
 WHITE_BLOB = _jpeg((255, 255, 255))
+HALF_WHITE_BLOB = _half_white_jpeg()
 S2_TILE_BLOB = _photo_jpeg()
 
 
@@ -63,6 +75,17 @@ def test_s2_crop_geometry_centers_waypoint():
 def test_is_blank_detects_uniform_white():
     assert bl._is_blank(Image.new("RGB", (300, 300), (255, 255, 255)))
     assert not bl._is_blank(Image.open(io.BytesIO(PHOTO_BLOB)))
+
+
+def test_insufficient_coverage_half_white_rejected():
+    # Border-straddling answer: 50% white fill >> the 25% threshold.
+    assert bl._insufficient_coverage(Image.open(io.BytesIO(HALF_WHITE_BLOB)))
+    # Fully blank still caught (fast path).
+    assert bl._insufficient_coverage(Image.new("RGB", (300, 300), (255, 255, 255)))
+    # A real photo — even one with some white buildings — passes.
+    photo = Image.open(io.BytesIO(PHOTO_BLOB)).convert("RGB")
+    photo.paste((255, 255, 255), (0, 0, 40, 40))  # ~2.4% white roofs
+    assert not bl._insufficient_coverage(photo)
 
 
 # --- WMS provider ----------------------------------------------------------
@@ -107,6 +130,14 @@ def test_dop_blank_white_is_none(tmp_path):
     ni = _dop_ni(tmp_path)
     img = ni.get_image(53.0, 10.0, 3.0, 800,
                        fetch=lambda url, timeout=bl.HTTP_TIMEOUT: (200, WHITE_BLOB))
+    assert img is None
+
+
+def test_dop_partial_border_fill_is_none(tmp_path):
+    # Half imagery, half white border fill (the live Minden case) → rejected.
+    ni = _dop_ni(tmp_path)
+    img = ni.get_image(53.0, 10.0, 3.0, 800,
+                       fetch=lambda url, timeout=bl.HTTP_TIMEOUT: (200, HALF_WHITE_BLOB))
     assert img is None
 
 
@@ -197,6 +228,24 @@ def test_cascade_blank_dop_falls_through(tmp_path, monkeypatch):
     img, attr = bl._build_photo(53.0, 10.0, 3.0, 800, provs)  # NI-only point
     assert img is not None
     assert "Sentinel-2 cloudless" in attr
+
+
+def test_cascade_partial_dop_falls_through_to_next_state(tmp_path, monkeypatch):
+    # The Minden regression: a border point inside both rectangles; NI answers
+    # half imagery / half white fill, NRW has the full picture. The cascade must
+    # reject NI's partial answer and land on NRW.
+    def fetch(url, timeout=bl.HTTP_TIMEOUT):
+        if "niedersachsen" in url:
+            return 200, HALF_WHITE_BLOB
+        if "wms.nrw.de" in url:
+            return 200, PHOTO_BLOB
+        return 404, None
+
+    monkeypatch.setattr(bl, "_http_get", fetch)
+    provs = bl.photo_providers(tmp_path)
+    img, attr = bl._build_photo(52.29, 8.92, 3.0, 800, provs)  # Minden: NI∩NRW
+    assert img is not None
+    assert "Geobasis NRW" in attr
 
 
 # --- Orchestration ---------------------------------------------------------
