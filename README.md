@@ -112,6 +112,8 @@ python3 navlog.py \
 | `--vatsim` | off | Fetch live VATSIM data: ATC frequencies, en-route radar, METAR/TAF. |
 | `--dfs-charts` | off | Append VFR charts for the destination from the official DFS AIP. |
 | `--vor-info` | off | Prompt for a free-text VOR reference (e.g. `233 FROM`) per waypoint; prints in the VOR column. |
+| `--wp-maps` | off | Append one openflightmaps chart briefing page per waypoint. Needs network on the first run; tiles are cached. |
+| `--map-radius-nm` | `3` | Chart excerpt radius in NM (clamped 1–5). Only meaningful with `--wp-maps`. |
 | `--fms` | off | Write an X-Plane FMS v3 flight plan to `Output/FMS plans/`. |
 | `--call-tower-nm` | `10` | NM remaining threshold for the tower-call leg marker. `0` disables. |
 | `--xplane` | macOS Steam default | X-Plane 12 root. Pass `--xplane ""` to skip the destination-briefing page. |
@@ -216,6 +218,17 @@ Reads from X-Plane's local nav data — no internet, no scraping:
 
 Degrades gracefully if the X-Plane files aren't found: comm frequencies and ATIS still appear, runway/ILS sections note the missing data.
 
+## Waypoint map pages (openflightmaps)
+
+With `--wp-maps`, the PDF gains one landscape briefing page per waypoint, in route order, directly after the nav table. Each page pairs a chart excerpt with the numbers you want beside the picture:
+
+- **The excerpt** is a detailed openflightmaps chart centred on the waypoint, with the waypoint's own feature at the crosshair, the route line drawn through it (magenta, white-haloed so it survives the pink airspace tint), a 1 NM scale bar, and a north hint. Radius is `--map-radius-nm` (default 3, clamped 1–5). Departure and destination get pages too — the departure picture for initial orientation, the destination page as an area complement to the DFS aerodrome plates.
+- **The left column** repeats that waypoint's VOR cross-checks (ident, frequency, radial, DME, Morse) and its position in degrees-minutes for the GPS cross-check. A manual `--vor-info` entry overrides the computed fixes, same precedence as the table.
+
+Tiles come from the public openflightmaps slippy-tile API (`nwy-tiles-api.prod.newaydata.com`): an opaque JPEG ground layer (z12) with a transparent aero overlay (z11, upscaled ×2) composited on top. The AIRAC cycle is computed from the date; on a publication-lag 404 the run falls back to the previous cycle once. Tiles are cached under `~/.cache/vfr-navlog/ofm/{cycle}/…`, so the first run is network-bound and reruns within a cycle are offline. Fetches are capped at four concurrent, 10 s timeout each. Coverage is regional (Germany plus a set of European regions); a waypoint outside it degrades to a skipped page with one stderr note, never a failed PDF.
+
+**Attribution and license.** openflightmaps data is published under the [OFMA General Users' License](https://www.openflightmaps.org/) — free use with attribution, similar in spirit to OpenStreetMap. Every map page carries the line `© open flightmaps — OFMA General Users' License — AIRAC {cycle}` with the cycle actually used. This keeps the tool a personal, non-redistributing client of the tile service.
+
 ## Tower-call marker
 
 The script walks legs forward. The first leg whose end sits within `--call-tower-nm` of the destination is the call leg; the marker anchors at its start so the cue appears early enough to dial in the radio. If VATSIM has Tower online, the marker shows the live frequency (`→ TWR 129.805`); falls back to APP if only Approach is up, or `→ EDDG TWR rufen` if neither.
@@ -239,6 +252,7 @@ Type codes: `1` = airport, `3` = VOR, `2` = NDB, `11` = intersection, `28` = use
 - FIR detection for en-route radar is latitude-based only — coarse, works for German routes.
 - Phraseology pages are tailored to the EDLI→EDDG route (Bremen/Langen FIS, Whiskey VRP at EDDG). Adapt for other routes.
 - DFS chart download (`--dfs-charts`) only covers German airports (ED prefix). Non-German destinations are silently skipped.
+- Waypoint map pages (`--wp-maps`) depend on the community openflightmaps tile endpoint (no SLA) and its regional coverage. Out-of-coverage waypoints are skipped; a hard endpoint outage degrades the whole feature to no pages.
 
 ## License
 
