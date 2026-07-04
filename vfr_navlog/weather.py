@@ -52,31 +52,65 @@ def _parse_temp(s: str) -> float:
     return -float(s[1:]) if s.startswith("M") else float(s)
 
 
+# ------------------------- shared METAR-group tokenizers -------------------------
+#
+# METAR and ATIS text carry the same coded groups for wind, temperature and
+# pressure. These extractors are the single source of truth for both parse_metar
+# and parse_atis; each entry point layers its own extras (METAR: vis/clouds/
+# phenomena; ATIS: verbose free-text fallbacks) around them.
+
+_WIND_GROUP_RE = re.compile(r"\b(VRB|\d{3})(\d{2,3})(?:G(\d{2,3}))?(KT|MPS)\b")
+
+
+def _tok_wind_group(pm: ParsedMetar, text: str, mod360: bool = False) -> bool:
+    """Set wind fields from a coded wind group (dddssKT / VRBssKT / dddssMPS).
+
+    Returns True if a group matched. `mod360` wraps the direction into 0–359
+    (ATIS convention); METAR keeps the reported direction verbatim.
+    """
+    m = _WIND_GROUP_RE.search(text)
+    if not m:
+        return False
+    kt = int(m.group(2))
+    gust = int(m.group(3)) if m.group(3) else None
+    if m.group(4) == "MPS":
+        kt = int(round(kt * 1.944))
+        gust = int(round(gust * 1.944)) if gust else None
+    pm.wind_kt = kt
+    pm.wind_gust_kt = gust
+    if m.group(1) == "VRB":
+        pm.wind_vrb = True
+    else:
+        pm.wind_dir = int(m.group(1)) % 360 if mod360 else int(m.group(1))
+    return True
+
+
+def _tok_temp_group(pm: ParsedMetar, text: str) -> None:
+    """Set temp/dewpoint from a coded 'tt/dd' group (M-prefixed = negative)."""
+    m = re.search(r"\b(M?\d{2})/(M?\d{2})\b", text)
+    if m:
+        try:
+            pm.temp_c = _parse_temp(m.group(1))
+            pm.dewpoint_c = _parse_temp(m.group(2))
+        except ValueError:
+            pass
+
+
+def _qnh_from_q(text: str) -> int | None:
+    m = re.search(r"\bQ(\d{4})\b", text)
+    return int(m.group(1)) if m else None
+
+
+def _qnh_from_a(text: str) -> int | None:
+    """Altimeter setting A#### (inHg × 100) converted to hPa."""
+    m = re.search(r"\bA(\d{4})\b", text)
+    return int(round(int(m.group(1)) * 0.338639)) if m else None
+
+
 def parse_metar(raw: str) -> ParsedMetar:
     result = ParsedMetar(raw=raw)
 
-    # Wind
-    m = re.search(r"\b(VRB|\d{3})(\d{2,3})(?:G(\d{2,3}))?KT\b", raw)
-    if m:
-        if m.group(1) == "VRB":
-            result.wind_vrb = True
-        else:
-            result.wind_dir = int(m.group(1))
-        result.wind_kt = int(m.group(2))
-        if m.group(3):
-            result.wind_gust_kt = int(m.group(3))
-
-    # MPS fallback (convert to kt)
-    if result.wind_kt is None:
-        m = re.search(r"\b(VRB|\d{3})(\d{2,3})(?:G(\d{2,3}))?MPS\b", raw)
-        if m:
-            if m.group(1) == "VRB":
-                result.wind_vrb = True
-            else:
-                result.wind_dir = int(m.group(1))
-            result.wind_kt = int(round(float(m.group(2)) * 1.944))
-            if m.group(3):
-                result.wind_gust_kt = int(round(float(m.group(3)) * 1.944))
+    _tok_wind_group(result, raw, mod360=False)
 
     # CAVOK
     if "CAVOK" in raw:
@@ -97,22 +131,16 @@ def parse_metar(raw: str) -> ParsedMetar:
                     result.ceiling_ft = height_ft
 
     # Temp / Dewpoint
-    m = re.search(r"\b(M?\d{2})/(M?\d{2})\b", raw)
-    if m:
-        try:
-            result.temp_c = _parse_temp(m.group(1))
-            result.dewpoint_c = _parse_temp(m.group(2))
-        except ValueError:
-            pass
+    _tok_temp_group(result, raw)
 
     # QNH
-    m = re.search(r"\bQ(\d{4})\b", raw)
-    if m:
-        result.qnh_hpa = int(m.group(1))
+    q = _qnh_from_q(raw)
+    if q is not None:
+        result.qnh_hpa = q
     else:
-        m = re.search(r"\bA(\d{4})\b", raw)
-        if m:
-            result.qnh_hpa = int(round(int(m.group(1)) * 0.338639))
+        a = _qnh_from_a(raw)
+        if a is not None:
+            result.qnh_hpa = a
 
     # Significant weather phenomena
     phenom_re = re.compile(
@@ -162,20 +190,7 @@ def parse_atis(lines: list[str]) -> ParsedMetar:
     pm = ParsedMetar(raw=text)
 
     # --- Wind: erst METAR-Gruppe (dddssKT / dddssMPS / VRBssKT), dann verbose ---
-    m = re.search(r"\b(VRB|\d{3})(\d{2,3})(?:G(\d{2,3}))?(KT|MPS)\b", text)
-    if m:
-        kt = int(m.group(2))
-        gust = int(m.group(3)) if m.group(3) else None
-        if m.group(4) == "MPS":
-            kt = int(round(kt * 1.944))
-            gust = int(round(gust * 1.944)) if gust else None
-        pm.wind_kt = kt
-        pm.wind_gust_kt = gust
-        if m.group(1) == "VRB":
-            pm.wind_vrb = True
-        else:
-            pm.wind_dir = int(m.group(1)) % 360
-    else:
+    if not _tok_wind_group(pm, text, mod360=True):
         m = re.search(r"\bWIND\b[^0-9]{0,8}(\d{3})[^0-9]{0,10}?(\d{1,3})\s*(?:KT|KNOT)", text)
         if m:
             pm.wind_dir = int(m.group(1)) % 360
@@ -191,26 +206,20 @@ def parse_atis(lines: list[str]) -> ParsedMetar:
                 pm.wind_gust_kt = int(g.group(1))
 
     # --- QNH: METAR-Gruppe (Qdddd / Adddd) oder verbose (QNH 1018) ---
-    m = re.search(r"\bQ(\d{4})\b", text)
-    if m:
-        pm.qnh_hpa = int(m.group(1))
+    q = _qnh_from_q(text)
+    if q is not None:
+        pm.qnh_hpa = q
     else:
         m = re.search(r"\bQNH\b[^0-9]{0,6}(\d{3,4})", text)
         if m:
             pm.qnh_hpa = int(m.group(1))
         else:
-            m = re.search(r"\bA(\d{4})\b", text)   # inHg → hPa
-            if m:
-                pm.qnh_hpa = int(round(int(m.group(1)) * 0.338639))
+            a = _qnh_from_a(text)   # inHg → hPa
+            if a is not None:
+                pm.qnh_hpa = a
 
     # --- Temp / Taupunkt: METAR-Gruppe (tt/dd) oder verbose (TEMP 14 DP 09) ---
-    m = re.search(r"\b(M?\d{2})/(M?\d{2})\b", text)
-    if m:
-        try:
-            pm.temp_c = _parse_temp(m.group(1))
-            pm.dewpoint_c = _parse_temp(m.group(2))
-        except ValueError:
-            pass
+    _tok_temp_group(pm, text)
     if pm.temp_c is None:
         m = re.search(r"\bTEMP\w*[^0-9M]{0,4}(M?\d{1,2}).{0,14}?(?:DEW\w*|DP|DEWPOINT)[^0-9M]{0,4}(M?\d{1,2})", text)
         if m:

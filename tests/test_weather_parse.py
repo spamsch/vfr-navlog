@@ -53,6 +53,18 @@ def test_parse_atis_embedded_metar():
     assert p.dewpoint_c == 9
 
 
+def test_parse_metar_mps_wind_converted_to_kt():
+    p = parse_metar("UUEE 041020Z 27010MPS 9999 SCT030 05/01 Q1015")
+    assert p.wind_dir == 270
+    assert p.wind_kt == round(10 * 1.944)
+
+
+def test_metar_keeps_360_atis_normalizes_to_0():
+    # The two entry points intentionally differ on direction normalization.
+    assert parse_metar("EDDV 041020Z 36008KT CAVOK 10/05 Q1020").wind_dir == 360
+    assert parse_atis(["EDDV 36008KT Q1020"]).wind_dir == 0
+
+
 def test_parse_atis_verbose():
     lines = ["Hannover Information Charlie", "WIND 250 DEGREES 8 KNOTS", "QNH 1018", "TEMPERATURE 14 DEWPOINT 09"]
     p = parse_atis(lines)
