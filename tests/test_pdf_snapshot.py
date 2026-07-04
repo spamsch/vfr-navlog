@@ -12,6 +12,7 @@ import pypdf
 import pytest
 
 import navlog
+import vfr_navlog.pdf
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SNAPSHOT = FIXTURES / "pdf_snapshot.txt"
@@ -52,6 +53,8 @@ def _render_text(tmp_path: Path) -> str:
 
 @pytest.fixture(autouse=True)
 def _freeze_time(monkeypatch):
+    # render() reads datetime from the pdf module after the package split.
+    monkeypatch.setattr(vfr_navlog.pdf, "datetime", _FrozenDateTime)
     monkeypatch.setattr(navlog, "datetime", _FrozenDateTime)
 
 
