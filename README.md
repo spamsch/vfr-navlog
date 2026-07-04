@@ -7,17 +7,33 @@ Two plan sources are supported:
 - **[Navigraph Charts](https://navigraph.com/products/charts)** — the primary source. With `--navigraph`, the script reads the active plan directly out of Navigraph Charts' local storage on macOS. No export, no file — just plan and run.
 - **[Little Navmap](https://www.littlenavmap.org/) `.lnmpln`** — pass the file with `--plan`. You can also plan in Navigraph Charts and export (File → Export → Little Navmap) to get this format.
 
-![Navlog page 1](docs/screenshot-page1.png)
+![Navlog — leg table with VOR cross-checks, live VATSIM frequencies, hemispheric altitudes, tower-call marker](docs/navlog-table.png)
 
 ## Output
 
-Five core pages, plus optional DFS airport chart pages appended at the end:
+All screenshots on this page come from one real run — EDDG → EDDK in an SR22, produced by the interactive session shown under [Interactive mode](#interactive-mode).
 
-1. **Navlog** — header strip, frequency block with live VATSIM frequencies (GND/TWR/ATIS/DEL/APP + en-route radar), ATIS strip, leg-by-leg table (TC / MH / dist / GS / ETE / fuel), fuel summary, planning assumptions, tower-call marker.
-2. **FIS / Radar phraseology** — bilingual (DE/EN) dialogue cheat-sheet for the en-route FIS or radar contact. Adapts automatically: when Langen / Bremen / München Radar is online on VATSIM, the page title, note, and squawk guidance update to reflect radar service rather than basic FIS.
-3. **CTR phraseology** — the full inbound sequence at the destination: initial tower call, full position report with ATIS letter, CTR entry clearance via Whiskey, Whiskey call, downwind join, landing clearance, runway vacated, taxi to GA apron. Variations table covers holds outside the CTR, squawk assignments, and traffic sequencing.
-4. **Destination briefing** — airport data (elevation, TA/TL, IATA), runway table with ILS LOC frequencies from X-Plane's `earth_nav.dat`, communication frequencies, live VATSIM ATIS text.
-5. **Weather briefing** — two-column METAR + TAF for departure and destination (via VATSIM weather proxy), parsed key values (wind, visibility, ceiling, QNH, phenomena), VFR / MVFR / IFR go/no-go assessment table, en-route radar banner.
+1. **Navlog** (above) — header strip, frequency block with live VATSIM frequencies (GND/TWR/ATIS/DEL/APP + en-route radar), ATIS strip, leg-by-leg table (TC / MH / dist / GS / ETE / fuel) with computed VOR cross-checks per waypoint, fuel summary, planning assumptions, tower-call marker.
+2. **Waypoint briefing pages** (optional, `--wp-maps`) — one page per waypoint, chart and orthophoto side by side, with that waypoint's VOR radials. See [Waypoint map pages](#waypoint-map-pages-chart--orthophoto).
+3. **FIS / Radar phraseology** — bilingual (DE/EN) dialogue cheat-sheet for the en-route FIS or radar contact. Adapts automatically: when Langen / Bremen / München Radar is online on VATSIM, the page title, note, and squawk guidance update to reflect radar service rather than basic FIS.
+4. **CTR phraseology** — the full inbound sequence at the destination: initial tower call, full position report with ATIS letter, CTR entry clearance via Whiskey, Whiskey call, downwind join, landing clearance, runway vacated, taxi to GA apron. Variations table covers holds outside the CTR, squawk assignments, and traffic sequencing.
+5. **Destination briefing** — airport data (elevation, TA/TL, IATA), runway table with ILS LOC frequencies from X-Plane's `earth_nav.dat`, communication frequencies, live VATSIM ATIS text, and a navaid reference table with Morse idents for every VOR used in the plan.
+6. **Weather briefing** — two-column METAR + TAF for departure and destination (via VATSIM weather proxy), parsed key values (wind, visibility, ceiling, QNH, phenomena), VFR / MVFR / IFR go/no-go assessment table, en-route radar banner.
+
+A waypoint briefing page mid-route — the chart carries the airspace, the orthophoto is what you actually see out the window, and the VOR band on top tells you which radials confirm you're there:
+
+![Waypoint page — VOR cross-checks OSB R244 and WRB R299, chart and orthophoto of the same 3 NM square](docs/waypoint-fixes.jpg)
+
+The destination waypoint page — Köln/Bonn's real runways in the photo, right under the chart's airport symbol, with the KBO overhead fix:
+
+![EDDK waypoint page — station passage KBO, chart and orthophoto](docs/waypoint-eddk.jpg)
+
+Destination and weather briefing:
+
+<p>
+<img src="docs/destination.png" width="49.5%" alt="Destination briefing — runways, ILS frequencies, navaid Morse reference">
+<img src="docs/weather.png" width="49.5%" alt="Weather briefing — METAR/TAF, parsed values, VFR assessment">
+</p>
 
 ## Install
 
@@ -62,23 +78,93 @@ git clone --depth 1 https://github.com/cclgroupltd/ccl_chromium_reader.git
 
 ## Interactive mode
 
+Run with no arguments and a wizard walks through everything. This is the actual session that generated the PDF in the screenshots above (lightly trimmed):
+
 ```
-python3 navlog.py
+➜  vfr-navlog git:(main) python3 navlog.py
+
+VFR Navlog  —  no arguments given, running interactive setup
+Tab-completes file paths. Press Enter to accept [defaults].
+
+Plan source
+  [1]  Little Navmap .lnmpln file
+  [2]  Navigraph Charts  (reads live from the app, macOS only)
+  → [1]: 2
+  Reading active Navigraph flight plan…[navigraph] EDDG to EDDK  (IFR)
+  Loaded: EDDG → EDDK  (10 waypoints, cruise alt 38000 ft)
+
+Aircraft JSON
+  [1]  aircraft_c172.json  ← default
+  [2]  aircraft_sr22.json
+  → [aircraft_c172.json]: 2
+
+Aircraft registration
+  → [D-EXXX]: D-EIYD
+
+Wind aloft  (DDD/SS, e.g. 270/15 — or 0/0 for calm)
+  [M]  fetch surface wind from VATSIM METAR at EDDG
+  → [0/0]: M
+  EDDG 041720Z AUTO 30013KT 260V330 9999 FEW037 22/14 Q1022 BECMG 27008KT
+  Using wind: 300/13  (surface METAR — not wind aloft)
+
+Cruise altitude  (ft MSL)
+  → [38000]: 3200
+
+Altitude changes at waypoints  (optional)
+  →
+
+Magnetic variation  (e.g. 4E, 1.0W, -2.5)
+  → [4E]:
+
+VATSIM  (fetch live ATC frequencies?)
+  → [y/N]: y
+
+VOR-Kreuzpeilungen automatisch berechnen?  (aus X-Plane earth_nav.dat)
+  Berechnet je Wegpunkt bis zu zwei VOR-Radiale zur Standlinien-Kontrolle.
+  → [y/N]: y
+
+VOR-Informationen je Wegpunkt manuell eingeben?  (z. B. 233 FROM)
+  Enter je Wegpunkt übernimmt die berechnete Peilung; Freitext überschreibt sie.
+  → [y/N]:
+
+DFS airport charts  (append VFR charts for destination?)
+  → [Y/n]:
+
+Wegpunkt-Kartenseiten aus openflightmaps?  (je Wegpunkt ein Kartenausschnitt)
+  Lädt Kartenkacheln beim ersten Lauf (Cache danach). Region Europa.
+  → [y/N]: y
+  Radius NM (1–5)  → [3]:
+  Basiskarte je Seite: [1] Karte + Orthofoto  [2] nur Karte  [3] nur Foto
+  → [1]:
+
+X-Plane FMS export
+  → [Y]:
+
+ICAO FPL  (für my.vatsim.net Import)
+  → Generieren? [y/N]:
+
+[navigraph] EDDG to EDDK  (IFR)
+[vor-fixes] 4016 VORs loaded, 16 cross-checks over 12 stations
+[weather] fetching METAR/TAF for EDDG, EDDK…
+[vatsim] EDDG: tower=129.805, atis=127.180
+[vatsim] EDGG: radar=123.010
+[weather] EDDG: VFR  ceiling=None ft  vis=9999 m  QNH=1022
+[weather] EDDK: VFR  ceiling=None ft  vis=9999 m  QNH=1022
+[hemispheric] Adjusted altitudes to comply with the VFR semi-circular rule:
+  EDDG→520230N0074048E  MH 181° (W):  3,200 ft → 4,500 ft
+  520230N0074048E→HMM  MH 175° (E):  3,200 ft → 3,500 ft
+  HMM→513819N0071553E  MH 232° (W):  3,200 ft → 4,500 ft
+  ...
+  505354N0070912E→EDDK  MH 196° (W):  3,200 ft → 4,500 ft
+[wp-maps] building chart + photo layers for 10 waypoint(s), AIRAC 2606…
+Wrote /Users/spamies/Documents/Flight/Flightplans/EDDG-EDDK/navlog_2026-07-04_sr22.pdf
+Total: 92.2 NM, 35 min, 35.5 L (trip only)
+Wrote FMS  /Users/spamies/…/X-Plane 12/Output/FMS plans/EDDG-EDDK.fms
 ```
 
-The wizard asks for:
+Worth noticing in that session: the plan came straight out of Navigraph Charts (no export step), the wind came from the live METAR with one keystroke, the naive 3 200 ft cruise was auto-corrected per leg to hemispheric-rule altitudes, and the VOR cross-checks — 16 radials over 12 stations — were computed from X-Plane's nav database without typing a single one.
 
-1. Plan source — `.lnmpln` file or Navigraph Charts live read
-2. Aircraft JSON
-3. Registration (defaults to JSON value, overridable)
-4. Wind aloft — `DDD/SS` or press `M` to fetch the surface METAR from VATSIM
-5. Cruise altitude in ft MSL
-6. Magnetic variation
-7. Whether to fetch live VATSIM data (ATC frequencies + weather)
-8. Whether to add a VOR reference per waypoint — if yes, it walks every waypoint and asks for free text (e.g. `233 FROM`), which prints in the navlog's VOR column. Press Enter to leave a waypoint blank.
-9. Whether to append DFS VFR charts for the destination
-10. Whether to write an X-Plane FMS file
-11. Whether to generate an ICAO FPL for VATSIM prefile — asks for EOBT, POB, equipment code, wake category, alternate, and pilot name, then opens `my.vatsim.net/pilots/flightplan/beta` pre-filled in your browser
+The wizard also handles step climbs per waypoint, manual VOR free-text overrides, and ICAO FPL generation for VATSIM prefile (EOBT, POB, equipment, wake category — then opens `my.vatsim.net/pilots/flightplan/beta` pre-filled in your browser).
 
 ## CLI
 
@@ -205,6 +291,8 @@ The bundled `aircraft_c172.json` uses Cessna 172S POH-typical numbers at 65% pow
 ## Phraseology pages
 
 Both pages are templated to the registration, aircraft type, departure, and destination from the plan.
+
+![CTR entry phraseology — bilingual dialogue script for the EDDK inbound](docs/phraseology.png)
 
 **Page 2 — FIS / en-route Radar.** When `--vatsim` is active and a radar station is online (e.g. Langen Radar), the page title shows the station name and live frequency, and the note box explains radar service semantics — squawk as instructed, separation is possible. When no radar is online it falls back to the standard Bremen Information FIS dialogue (Erstanruf, Vollmeldung, squawk 7000 on departure, workload denial and no-radar-contact variations).
 
