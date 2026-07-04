@@ -97,12 +97,17 @@ class AirportInfo:
     lon: float | None = None
     runways: list[Runway] = None  # type: ignore[assignment]
     ils_locs: list[IlsLoc] = None  # type: ignore[assignment]
+    # Published comm frequencies from apt.dat (role → MHz string): the standard-
+    # frequency fallback when no VATSIM station is online.
+    frequencies: dict[str, str] = None  # type: ignore[assignment]
 
     def __post_init__(self):
         if self.runways is None:
             self.runways = []
         if self.ils_locs is None:
             self.ils_locs = []
+        if self.frequencies is None:
+            self.frequencies = {}
 
 
 @dataclass
@@ -194,6 +199,7 @@ class RenderContext:
     with_dfs_charts: bool
     navaids: list = field(default_factory=list)  # distinct RadialFix per station, for the reference block
     wp_maps: list = field(default_factory=list)  # per-waypoint WaypointLayers | None, in route order
+    dep_info: AirportInfo | None = None  # departure airport, for standard-frequency fallback
 
 
 @dataclass

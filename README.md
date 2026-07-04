@@ -236,7 +236,7 @@ The chart data comes from `aip.aero` as the AIRAC-cycle discovery index and `aip
 
 When `--vatsim` is set, the script makes three types of requests:
 
-**ATC frequencies** — single GET against `https://data.vatsim.net/v3/vatsim-data.json`. Callsigns of the form `<ICAO>_GND`, `_TWR`, `_ATIS`, `_DEL`, `_APP`, `_CTR` are matched; split sectors (`EDDG_N_TWR`) handled by suffix. Frequencies populate the navlog's frequency block and the tower-call marker.
+**ATC frequencies** — single GET against `https://data.vatsim.net/v3/vatsim-data.json`. Callsigns of the form `<ICAO>_GND`, `_TWR`, `_ATIS`, `_DEL`, `_APP`, `_CTR` are matched; split sectors (`EDDG_N_TWR`) handled by suffix. Frequencies populate the navlog's frequency block and the tower-call marker. Stations with a live VATSIM controller print **bold**; where nobody is online, the published standard frequency from X-Plane's `apt.dat` fills the cell in regular weight, so the block is never empty just because the network is quiet.
 
 **En-route radar** — the script detects which German FIR the route overflies (EDGG Langen, EDWW Bremen, EDMM München) from waypoint latitudes and looks for online CTR stations. If Langen Radar is online, its frequency appears in a dedicated row in the frequency block (highlighted in blue) and the phraseology page 2 title and note update to reflect radar service, including the correct squawk guidance.
 

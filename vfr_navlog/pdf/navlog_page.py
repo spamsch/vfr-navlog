@@ -31,13 +31,18 @@ def render_navlog_page(pdf, font, ctx, date_str: str) -> None:
     departure = plan.waypoints[0]
     destination = plan.waypoints[-1]
 
-    # Tower-call marker: which waypoint row to flag, plus optional VATSIM freq.
+    # Tower-call marker: which waypoint row to flag. Live VATSIM tower/approach
+    # first, then the published standard tower frequency from apt.dat.
     call_leg_idx = find_call_marker(legs, ctx.call_tower_nm)
     dest_freqs_for_call = (
         vatsim.frequencies.get(destination.ident.upper(), {}) if vatsim else {}
     )
+    std_dest_freqs = ctx.dest_info.frequencies if ctx.dest_info else {}
     call_freq = dest_freqs_for_call.get("tower") or dest_freqs_for_call.get("approach")
     call_freq_label = "TWR" if dest_freqs_for_call.get("tower") else ("APP" if dest_freqs_for_call.get("approach") else "TWR")
+    if not call_freq and std_dest_freqs.get("tower"):
+        call_freq = std_dest_freqs["tower"]
+        call_freq_label = "TWR"
     if call_freq:
         call_text = f"→ {call_freq_label} {call_freq}"
     else:
@@ -51,8 +56,10 @@ def render_navlog_page(pdf, font, ctx, date_str: str) -> None:
     # Reserve space at the bottom of each table page for the footer line.
     usable_bottom = pdf.h - pdf.b_margin - 7
 
+    std_dep_freqs = ctx.dep_info.frequencies if ctx.dep_info else {}
     nav_y = _draw_header_block(pdf, font, pw, departure, destination, aircraft,
-                              vatsim, ctx.fir_icaos, ctx.field_wx, ctx.weather, date_str)
+                              vatsim, ctx.fir_icaos, ctx.field_wx, ctx.weather, date_str,
+                              std_dep_freqs, std_dest_freqs)
     cum_dist, cum_ete, cum_fuel, current_y = _draw_nav_table(
         pdf, font, pw, plan, legs, wind, magvar, perf,
         nav_y, call_leg_idx, call_text, _note_text, usable_bottom)
@@ -63,7 +70,8 @@ def render_navlog_page(pdf, font, ctx, date_str: str) -> None:
 
 
 def _draw_header_block(pdf, font, pw, departure, destination, aircraft,
-                       vatsim, fir_icaos, field_wx, weather, date_str) -> float:
+                       vatsim, fir_icaos, field_wx, weather, date_str,
+                       std_dep_freqs=None, std_dest_freqs=None) -> float:
     # ---------- header strip ----------
     pdf.set_font(font, "B", 11)
     pdf.set_xy(pdf.l_margin, pdf.t_margin)
@@ -104,15 +112,17 @@ def _draw_header_block(pdf, font, pw, departure, destination, aircraft,
     pdf.set_xy(fr_x, y)
     pdf.set_font(font, "B", 8)
     if vatsim and not vatsim.empty():
-        freq_title = f" Frequenzen   (VATSIM live, {vatsim.fetched_at})"
+        freq_title = f" Frequenzen   (fett = VATSIM live, {vatsim.fetched_at})"
     elif vatsim:
-        freq_title = " Frequenzen   (VATSIM: keine Stationen online)"
+        freq_title = " Frequenzen   (Standard — VATSIM: keine Stationen online)"
     else:
-        freq_title = " Frequenzen"
+        freq_title = " Frequenzen   (Standard)"
     pdf.cell(fr_w, 4, freq_title, border="LTR")
 
     dep_freqs = vatsim.frequencies.get(departure.ident.upper(), {}) if vatsim else {}
     dest_freqs = vatsim.frequencies.get(destination.ident.upper(), {}) if vatsim else {}
+    std_dep_freqs = std_dep_freqs or {}
+    std_dest_freqs = std_dest_freqs or {}
 
     fr_rows = [
         ("Ground", "ground", "delivery"),
@@ -130,20 +140,26 @@ def _draw_header_block(pdf, font, pw, departure, destination, aircraft,
     for i, (label, primary, fallback) in enumerate(fr_rows):
         ry = y + 8 + i * sub_rh
         pdf.set_xy(fr_x, ry)
-        pdf.set_font(font, "", 8)
 
-        def pick(freqs: dict[str, str]) -> str:
-            v = freqs.get(primary, "")
+        def pick(live: dict[str, str], std: dict[str, str]) -> tuple[str, bool]:
+            """(value, is_live). Live VATSIM wins and prints bold; the published
+            standard frequency from apt.dat fills the gap in regular weight."""
+            v = live.get(primary, "")
             if not v and fallback:
-                v = freqs.get(fallback, "")
+                v = live.get(fallback, "")
                 if v:
                     v += f" ({fallback[:3].upper()})"
-            return v
+            if v:
+                return v, True
+            return std.get(primary, ""), False
 
-        dep_v = pick(dep_freqs)
-        dest_v = pick(dest_freqs)
+        dep_v, dep_live = pick(dep_freqs, std_dep_freqs)
+        dest_v, dest_live = pick(dest_freqs, std_dest_freqs)
+        pdf.set_font(font, "", 8)
         pdf.cell(col1_w, sub_rh, " " + label, border=1)
+        pdf.set_font(font, "B" if dep_live else "", 8)
         pdf.cell(col_rest, sub_rh, " " + dep_v if dep_v else "", border=1)
+        pdf.set_font(font, "B" if dest_live else "", 8)
         pdf.cell(col_rest, sub_rh, " " + dest_v if dest_v else "", border=1)
 
     # Radar / FIS row — spans dep+dest columns, highlighted in pale blue when online.

@@ -9,7 +9,7 @@ LFZ-Muster
  C172S
 LFZ-Kennz.
  D-EIYD
- Freigaben / Wetter / Info  Frequenzen
+ Freigaben / Wetter / Info  Frequenzen   (Standard)
  EDDV (Abflug)  EDLI (Ziel)
  Ground
  Tower

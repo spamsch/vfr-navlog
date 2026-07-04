@@ -46,3 +46,18 @@ def test_airport_positions():
     pos = airport_positions(APT, {"EDDV", "EDLI"})
     assert pos["EDDV"] == pytest.approx(((52.46 + 52.47) / 2, (9.68 + 9.69) / 2))
     assert "EDLI" in pos
+
+
+def test_scan_airports_parses_standard_frequencies():
+    got = scan_airports(APT, {"EDDV", "EDLI"})
+
+    # EDDV mixes 1050-series (kHz) and a legacy 55 row (10 kHz units).
+    assert got["EDDV"].frequencies == {
+        "atis": "127.970",
+        "ground": "121.775",
+        "tower": "129.805",
+        "approach": "119.18",
+    }
+    # EDLI has both a legacy and a 1050-series tower row — the 8.33-capable
+    # 1050 row wins regardless of file order.
+    assert got["EDLI"].frequencies["tower"] == "118.355"

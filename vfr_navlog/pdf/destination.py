@@ -103,11 +103,12 @@ def render_destination_page(
     # ---------- Comm frequencies (recap + ATIS text) ----------
     pdf.set_font(font, "B", 9)
     pdf.set_fill_color(225, 225, 225)
-    suffix = f"  (VATSIM live, {vatsim.fetched_at})" if vatsim else ""
+    suffix = f"  (fett = VATSIM live, {vatsim.fetched_at})" if vatsim else "  (Standard)"
     pdf.cell(pw, 5, "  Frequenzen & ATIS  ·  Communication frequencies" + suffix, border=1, fill=True)
     pdf.ln(5)
 
-    freqs = vatsim.frequencies.get(info.icao, {}) if vatsim else {}
+    live = vatsim.frequencies.get(info.icao, {}) if vatsim else {}
+    std = info.frequencies or {}
     role_labels = [
         ("Ground",    "ground"),
         ("Tower",     "tower"),
@@ -123,15 +124,20 @@ def render_destination_page(
     col = 0
     row_y = pdf.get_y()
     for label, key in role_labels:
+        is_live = False
         if key is None:
             value = f"{UNICOM_FREQ} (kein ATC)"
         else:
-            value = freqs.get(key, "—") or "—"
+            # Live VATSIM station bold; published standard frequency otherwise.
+            value = live.get(key, "")
+            is_live = bool(value)
+            if not value:
+                value = std.get(key, "—") or "—"
         x = pdf.l_margin + col * (label_w2 + val_w2)
         pdf.set_xy(x, row_y)
         pdf.set_font(font, "B", 8)
         pdf.cell(label_w2, 5, " " + label, border=1)
-        pdf.set_font(font, "", 9)
+        pdf.set_font(font, "B" if is_live else "", 9)
         pdf.cell(val_w2, 5, " " + value, border=1)
         col += 1
         if col == 3:

@@ -34,7 +34,7 @@ from .weather import (
     fetch_taf,
     field_weather,
 )
-from .xplane import load_destination_info, load_vors
+from .xplane import load_airport_infos, load_vors
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -256,9 +256,10 @@ def run(config: RunConfig) -> None:
     legs = compute_legs(plan, tas, wind, magvar, burn)
     apply_hemispheric_rule(plan, legs)
 
+    dep_info: AirportInfo | None = None
     dest_info: AirportInfo | None = None
     if xplane_path:
-        dest_info = load_destination_info(plan, xplane_path)
+        dep_info, dest_info = load_airport_infos(plan, xplane_path)
 
     # Per-waypoint base layers (chart + orthophoto): fetched here (network) so the
     # PDF renderer only lays out finished images. Degrades to empty on any failure.
@@ -287,7 +288,7 @@ def run(config: RunConfig) -> None:
         vatsim=snapshot, dest_info=dest_info, weather=briefing, field_wx=field_wx,
         fir_icaos=fir_icaos, source_note=source_note,
         call_tower_nm=config.call_tower_nm, with_dfs_charts=config.with_dfs_charts,
-        navaids=navaids, wp_maps=wp_maps,
+        navaids=navaids, wp_maps=wp_maps, dep_info=dep_info,
     )
     render(ctx, out)
     print(f"Wrote {out}")

@@ -143,8 +143,10 @@ def test_load_vors_from_fixture(tmp_path):
     vors = load_vors(tmp_path)
     by_ident = {v.ident: v for v in vors}
 
-    # VOR, VOR-DME kept; standalone DME, NDB, and malformed line dropped.
-    assert set(by_ident) == {"HLZ", "DLE"}
+    # VOR, VOR-DME, VORTAC kept; standalone DME, NDB, malformed line, and pure
+    # TACAN dropped — civil receivers get no azimuth from a TACAN.
+    assert set(by_ident) == {"HLZ", "DLE", "NVO"}
+    assert "OSB" not in by_ident
 
     hlz = by_ident["HLZ"]
     assert hlz.freq == "116.30"

@@ -7,12 +7,24 @@ from .config import APT_REL, FIX_REL, NAV_FALLBACK_REL, NAV_REL, SURFACE_NAMES
 from .geo import haversine_m
 from .model import AirportInfo, IlsLoc, Plan, Runway, VorStation
 
+# apt.dat comm-frequency rows: legacy 50-series (freq in 10 kHz units) and the
+# 8.33-kHz-capable 1050-series (freq in kHz). 51/1051 (UNICOM) and 56/1056
+# (departure) are not rendered anywhere, so they are not collected.
+_FREQ_ROLES = {
+    "50": ("atis", 100), "52": ("delivery", 100), "53": ("ground", 100),
+    "54": ("tower", 100), "55": ("approach", 100),
+    "1050": ("atis", 1000), "1052": ("delivery", 1000), "1053": ("ground", 1000),
+    "1054": ("tower", 1000), "1055": ("approach", 1000),
+}
+
 
 def scan_airports(apt_path: Path, icaos) -> dict[str, AirportInfo]:
     """Single front-to-back pass over apt.dat answering for a *set* of ICAOs.
 
     Returns {ICAO: AirportInfo} for each requested code found. Each AirportInfo
-    carries its runways and an averaged runway-endpoint position (.lat/.lon).
+    carries its runways, its published comm frequencies (.frequencies, the
+    real-world fallback when no VATSIM station is online), and an averaged
+    runway-endpoint position (.lat/.lon).
     Replaces the two duplicate state machines (parse_airport / _airport_position);
     X-Plane's global apt.dat is hundreds of MB, so we walk it once and stop as
     soon as every requested airport has been read.
@@ -70,6 +82,17 @@ def scan_airports(apt_path: Path, icaos) -> dict[str, AirportInfo]:
                             info.transition_level = val
                         elif key == "iata_code":
                             info.iata = val
+                    elif row in _FREQ_ROLES and len(parts) >= 2:
+                        role, div = _FREQ_ROLES[row]
+                        try:
+                            raw = int(parts[1])
+                        except ValueError:
+                            continue
+                        mhz = f"{raw / 100:.2f}" if div == 100 else f"{raw / 1000:.3f}"
+                        # 1050-series carries 8.33 kHz precision — let it win
+                        # over a legacy row; legacy only fills gaps.
+                        if div == 1000 or role not in info.frequencies:
+                            info.frequencies[role] = mhz
                     elif row == "100" and len(parts) >= 26:
                         # 100 width surface ... end1_ident lat lon ... end2_ident lat lon ...
                         try:
@@ -145,23 +168,37 @@ def parse_ils_locs(nav_path: Path, icao: str) -> list[IlsLoc]:
     return out
 
 
-def load_destination_info(plan: Plan, xplane_path: Path) -> AirportInfo | None:
-    if not plan.waypoints:
-        return None
-    dest = plan.waypoints[-1]
-    if dest.type.upper() != "AIRPORT":
-        return None
-    apt_path = xplane_path / APT_REL
-    info = parse_airport(apt_path, dest.ident)
-    if info is None:
-        info = AirportInfo(icao=dest.ident.upper(), name=dest.name or dest.ident,
-                           elevation_ft=dest.alt_ft or 0.0)
+def load_airport_infos(plan: Plan, xplane_path: Path) -> tuple[AirportInfo | None, AirportInfo | None]:
+    """(departure, destination) AirportInfo from one apt.dat pass.
 
-    nav_path = xplane_path / NAV_REL
-    if not nav_path.exists():
-        nav_path = xplane_path / NAV_FALLBACK_REL
-    info.ils_locs = parse_ils_locs(nav_path, info.icao)
-    return info
+    The departure info exists for its published comm frequencies (the standard-
+    frequency fallback in the navlog's frequency block); only the destination
+    gets the ILS join and the briefing page.
+    """
+    if not plan.waypoints:
+        return None, None
+    dep = plan.waypoints[0]
+    dest = plan.waypoints[-1]
+    wanted = {wp.ident for wp in (dep, dest) if wp.type.upper() == "AIRPORT"}
+    found = scan_airports(xplane_path / APT_REL, wanted)
+
+    dep_info = found.get(dep.ident.upper()) if dep.type.upper() == "AIRPORT" else None
+
+    dest_info: AirportInfo | None = None
+    if dest.type.upper() == "AIRPORT":
+        dest_info = found.get(dest.ident.upper())
+        if dest_info is None:
+            dest_info = AirportInfo(icao=dest.ident.upper(), name=dest.name or dest.ident,
+                                    elevation_ft=dest.alt_ft or 0.0)
+        nav_path = xplane_path / NAV_REL
+        if not nav_path.exists():
+            nav_path = xplane_path / NAV_FALLBACK_REL
+        dest_info.ils_locs = parse_ils_locs(nav_path, dest_info.icao)
+    return dep_info, dest_info
+
+
+def load_destination_info(plan: Plan, xplane_path: Path) -> AirportInfo | None:
+    return load_airport_infos(plan, xplane_path)[1]
 
 
 def load_vors(xplane_path: Path) -> list[VorStation]:
@@ -217,6 +254,12 @@ def load_vors(xplane_path: Path) -> list[VorStation]:
                     continue
                 # Skip the terminal-area id and ICAO region to get the plain name.
                 name = " ".join(parts[10:]) if len(parts) >= 11 else " ".join(parts[8:])
+                # Pure TACANs are military: a civil VOR receiver gets no azimuth
+                # from them, so they cannot serve as a radial fix. VORTACs keep
+                # their VOR part and stay usable.
+                upper_name = name.upper()
+                if "TACAN" in upper_name and "VORTAC" not in upper_name:
+                    continue
                 vors.append(VorStation(
                     ident=ident,
                     name=name,
