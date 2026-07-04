@@ -219,3 +219,5 @@ class RunConfig:
     fms: bool
     fpl_fields: dict | None
     vor_fixes: bool = False  # compute automatic VOR radial cross-checks per waypoint
+    wp_maps: bool = False    # render per-waypoint OFM chart briefing pages
+    map_radius_nm: float = 3.0  # excerpt radius, only meaningful with wp_maps

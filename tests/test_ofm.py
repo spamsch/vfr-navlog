@@ -129,3 +129,38 @@ def test_cache_hit_skips_http(tmp_path, monkeypatch):
 def test_fetch_tile_none_on_404(tmp_path, monkeypatch):
     monkeypatch.setattr(ofm, "_http_get", lambda url, timeout=ofm.TILE_TIMEOUT: (404, None))
     assert ofm.fetch_tile("base", 12, 1, 1, "9999", cache_dir=tmp_path) is None
+
+
+# --- Run-level orchestration -----------------------------------------------
+
+class _WP:
+    def __init__(self, ident, lat, lon):
+        self.ident, self.lat, self.lon = ident, lat, lon
+
+
+class _Plan:
+    def __init__(self, wps):
+        self.waypoints = wps
+
+
+def test_prepare_degrades_to_none_without_network(tmp_path, monkeypatch):
+    # Every tile fetch fails -> every waypoint yields None, no exception, PDF safe.
+    monkeypatch.setattr(ofm, "fetch_tile",
+                        lambda *a, **k: None)
+    plan = _Plan([_WP("EDDV", 52.46, 9.68), _WP("EDLI", 51.96, 8.54)])
+    maps = ofm.prepare_waypoint_maps(plan, 3.0, date(2026, 7, 4), cache_dir=tmp_path)
+    assert maps == [None, None]
+
+
+def test_prepare_falls_back_to_previous_cycle(tmp_path, monkeypatch):
+    # Current cycle 404s; previous cycle serves tiles -> maps carry the prev cycle.
+    def fetch(layer, z, x, y, cycle, cache_dir=None):
+        if cycle == "2606":
+            return None
+        return BASE_BLOB if layer == "base" else AERO_BLOB
+
+    monkeypatch.setattr(ofm, "fetch_tile", fetch)
+    plan = _Plan([_WP("EDDV", 52.46, 9.68), _WP("EDLI", 51.96, 8.54)])
+    maps = ofm.prepare_waypoint_maps(plan, 3.0, date(2026, 7, 4), cache_dir=tmp_path)
+    assert all(m is not None for m in maps)
+    assert all(m.cycle == "2605" for m in maps)

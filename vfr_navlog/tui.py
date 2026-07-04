@@ -299,6 +299,23 @@ def _tui() -> RunConfig:
     raw = input("  → [Y/n]: ").strip().lower()
     dfs_charts = raw not in ("n", "no")
 
+    # --- Waypoint map pages (openflightmaps) ---
+    h("Wegpunkt-Kartenseiten aus openflightmaps?  (je Wegpunkt ein Kartenausschnitt)")
+    print(f"  {DIM}Lädt Kartenkacheln beim ersten Lauf (Cache danach). Region Europa.{R}")
+    wp_maps = input("  → [y/N]: ").strip().lower() in ("y", "yes")
+    map_radius_nm = 3.0
+    if wp_maps:
+        while True:
+            raw = input("  Radius NM (1–5)  → [3]: ").strip() or "3"
+            try:
+                val = float(raw)
+                if 1.0 <= val <= 5.0:
+                    map_radius_nm = val
+                    break
+            except ValueError:
+                pass
+            print("  Enter a number between 1 and 5.")
+
     # --- FMS ---
     h("X-Plane FMS export")
     fms_dir = DEFAULT_XPLANE / "Output" / "FMS plans"
@@ -336,4 +353,6 @@ def _tui() -> RunConfig:
         fms=fms,
         fpl_fields=fpl_fields,
         vor_fixes=vor_fixes,
+        wp_maps=wp_maps,
+        map_radius_nm=map_radius_nm,
     )

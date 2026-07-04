@@ -72,6 +72,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--vor-fixes", action="store_true", default=False,
                     help="Compute VOR radial cross-checks per waypoint from X-Plane earth_nav.dat "
                          "(needs a resolvable --xplane). Manual --vor-info entries override them.")
+    ap.add_argument("--wp-maps", action="store_true", default=False,
+                    help="Append one openflightmaps chart briefing page per waypoint "
+                         "(needs network on first run; tiles are cached under ~/.cache/vfr-navlog).")
+    ap.add_argument("--map-radius-nm", type=float, default=3.0,
+                    help="Chart excerpt radius in NM (1–5, default 3). Only meaningful with --wp-maps.")
     fpl_grp = ap.add_argument_group("ICAO FPL output  (my.vatsim.net import)")
     fpl_grp.add_argument("--fpl-eobt", default=None, metavar="HHMM",
                          help="Generate ICAO FPL with this EOBT (UTC), e.g. 1030. "
@@ -121,6 +126,8 @@ def _runconfig_from_cli(args: argparse.Namespace) -> RunConfig:
         fms=args.fms,
         fpl_fields=fpl_fields,
         vor_fixes=args.vor_fixes,
+        wp_maps=args.wp_maps,
+        map_radius_nm=max(1.0, min(5.0, float(args.map_radius_nm))),
     )
 
 
@@ -249,6 +256,15 @@ def run(config: RunConfig) -> None:
     if xplane_path:
         dest_info = load_destination_info(plan, xplane_path)
 
+    # Per-waypoint OFM chart excerpts: fetched here (network) so the PDF renderer
+    # only lays out finished images. Degrades to empty on any failure.
+    wp_maps: list = []
+    if config.wp_maps:
+        from datetime import date
+
+        from .ofm import prepare_waypoint_maps
+        wp_maps = prepare_waypoint_maps(plan, config.map_radius_nm, date.today())
+
     if config.output is not None:
         out = config.output
     else:
@@ -266,7 +282,7 @@ def run(config: RunConfig) -> None:
         vatsim=snapshot, dest_info=dest_info, weather=briefing, field_wx=field_wx,
         fir_icaos=fir_icaos, source_note=source_note,
         call_tower_nm=config.call_tower_nm, with_dfs_charts=config.with_dfs_charts,
-        navaids=navaids,
+        navaids=navaids, wp_maps=wp_maps,
     )
     render(ctx, out)
     print(f"Wrote {out}")

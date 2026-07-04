@@ -211,13 +211,15 @@ def _stitch(layer: str, z: int, left_px: int, top_px: int, side_px: int,
 
 
 def map_excerpt(lat: float, lon: float, radius_nm: float, cycle: str,
-                cache_dir: Path = DEFAULT_CACHE, fetch=fetch_tile) -> Image.Image | None:
+                cache_dir: Path = DEFAULT_CACHE, fetch=None) -> Image.Image | None:
     """A composited, cropped OFM excerpt centred on (lat, lon), or None.
 
     None means no ground coverage (all base tiles missing) — out of the OFM
     region or a hard network failure. A missing aero layer is not fatal: the
     ground picture alone is worth a page.
     """
+    if fetch is None:
+        fetch = fetch_tile  # resolved at call time so monkeypatching works
     left, top, side = _crop_origin(lat, lon, radius_nm)
     if side <= 0:
         return None
