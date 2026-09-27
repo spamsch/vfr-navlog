@@ -223,6 +223,16 @@ def cmd_field(req: dict) -> dict:
     }
 
 
+def cmd_charts(req: dict) -> dict:
+    """Airport chart pages for one aerodrome (cached; downloads when missing or outdated)."""
+    from . import airport_charts
+
+    icao = str(req["icao"]).upper()
+    if req.get("cached_only"):
+        return airport_charts.cached(icao) or {"icao": icao, "pages": []}
+    return airport_charts.fetch(icao, force=bool(req.get("force")))
+
+
 def cmd_kneeboard(req: dict) -> dict:
     """Send the app's kneeboard data to the in-sim FlyWithLua window."""
     from .kneeboard import send
@@ -232,7 +242,7 @@ def cmd_kneeboard(req: dict) -> dict:
 
 
 COMMANDS = {"aircraft": cmd_aircraft, "resolve": cmd_resolve, "pdf": cmd_pdf, "field": cmd_field,
-            "kneeboard": cmd_kneeboard}
+            "kneeboard": cmd_kneeboard, "charts": cmd_charts}
 
 
 def handle(req: dict) -> dict:

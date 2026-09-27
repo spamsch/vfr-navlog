@@ -40,6 +40,9 @@
       <span class="meta">
         {#if r.dest_info}Elev {r.dest_info.elevation_ft} ft{r.dest_info.transition_alt ? ` · TA ${r.dest_info.transition_alt}` : ""}{/if}
       </span>
+      {#if app.chartsFor(dest.ident)?.pages.length}
+        <button class="small" onclick={() => app.openCharts(dest.ident)}>Charts ({app.chartsFor(dest.ident)?.pages.length})</button>
+      {/if}
       <button class="small" onclick={() => app.fetchField()} disabled={app.fieldBusy}>
         {app.fieldBusy ? "…" : "↻"}
         {live ? live.fetched_at : "load"}

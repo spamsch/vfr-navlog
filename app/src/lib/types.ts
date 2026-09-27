@@ -47,6 +47,21 @@ export interface Resolved {
   firs: string[]; // FIRs the route crosses (for the en-route radar frequency)
 }
 
+/** Airport chart pages (DFS AIP) from the bridge's "charts" command, cached on disk. */
+export interface ChartPage {
+  title: string;
+  file: string; // file name in ~/.cache/vfr-navlog/charts/<ICAO>/
+  width: number;
+  height: number;
+}
+
+export interface AirportCharts {
+  icao: string;
+  name?: string;
+  pages: ChartPage[];
+  error?: string;
+}
+
 /** Live airfield data from the bridge's "field" command. */
 export interface FieldLive {
   icao: string;

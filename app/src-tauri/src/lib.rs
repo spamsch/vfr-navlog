@@ -173,6 +173,25 @@ fn tile_response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Respo
         .unwrap()
 }
 
+// --- Airport charts -----------------------------------------------------------
+
+/// `/{ICAO}/{file}.png` inside `~/.cache/vfr-navlog/charts` (filled by the Python
+/// side). Both parts are validated so the protocol can serve nothing else.
+fn chart_path(path: &str) -> Option<PathBuf> {
+    let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let (icao, file) = (parts[0], parts[1]);
+    let icao_ok = icao.len() == 4 && icao.bytes().all(|b| b.is_ascii_uppercase());
+    let stem = file.strip_suffix(".png")?;
+    let file_ok = !stem.is_empty() && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if !icao_ok || !file_ok {
+        return None;
+    }
+    Some(dirs::home_dir()?.join(".cache").join("vfr-navlog").join("charts").join(icao).join(file))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let client = reqwest::Client::builder()
@@ -196,6 +215,19 @@ pub fn run() {
                             tile_response(StatusCode::OK, ct, bytes)
                         }
                         None => tile_response(StatusCode::NOT_FOUND, "text/plain", Vec::new()),
+                    },
+                };
+                responder.respond(resp);
+            });
+        })
+        .register_asynchronous_uri_scheme_protocol("chart", |_ctx, request, responder| {
+            let path = request.uri().path().to_string();
+            tauri::async_runtime::spawn(async move {
+                let resp = match chart_path(&path) {
+                    None => tile_response(StatusCode::BAD_REQUEST, "text/plain", b"bad chart path".to_vec()),
+                    Some(p) => match tokio::fs::read(&p).await {
+                        Ok(bytes) => tile_response(StatusCode::OK, "image/png", bytes),
+                        Err(_) => tile_response(StatusCode::NOT_FOUND, "text/plain", Vec::new()),
                     },
                 };
                 responder.respond(resp);

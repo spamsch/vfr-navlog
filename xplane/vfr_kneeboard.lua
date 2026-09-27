@@ -381,6 +381,11 @@ local function draw_plan()
     if imgui.Button((dest_open and "Hide " or "Show ") .. "destination " .. p.waypoints[n].ident, 230, 24) then
         kb.dest_open = not dest_open
     end
+    if p.charts and #p.charts > 0 then
+        imgui.SameLine()
+        -- Never create a window while drawing another one: queue it for vfrkb_frame().
+        if imgui.Button("Charts", 70, 24) then kb.pending = "charts_toggle" end
+    end
     if k >= 1 then
         imgui.SameLine()
         if imgui.Button("Reset log", 90, 24) then reset_log() end
@@ -485,8 +490,256 @@ function vfrkb_over_now()
     if kb.plan then mark_over() end
 end
 
+-- ---------------------------------------------------------------------------
+-- Airport charts window (DFS AIP pages sent by the app, one texture per page)
+
+local CHART_BASE = SYSTEM_DIRECTORY .. "Output/vfr-navlog/"
+local CHART_W, CHART_H = 760, 820
+local ZOOMS = { 1.0, 1.5, 2.0, 3.0 }
+
+kb.images = {}       -- chart file -> image id (FlyWithLua cannot unload; names change per AIP issue)
+kb.want_image = nil  -- file the chart window wants; loaded in the poll, never while drawing
+kb.chart = { wnd = nil, set = nil, page = 1, zoom = 1, geom = nil, phase = nil }
+
+local function chart_sets()
+    return (kb.plan and kb.plan.charts) or {}
+end
+
+-- Departure charts until airborne on the first leg, destination charts from then on.
+local function auto_set_index()
+    local sets = chart_sets()
+    if #sets == 0 or not kb.plan then return nil end
+    local dep = kb.plan.waypoints[1].ident
+    local k = active_leg()
+    local want = (k <= 1 and not (kb.plan.call_leg and k >= kb.plan.call_leg)) and dep
+        or kb.plan.waypoints[#kb.plan.waypoints].ident
+    for i, s in ipairs(sets) do
+        if s.icao == want then return i end
+    end
+    return 1
+end
+
+local function current_chart()
+    local sets = chart_sets()
+    local phase = auto_set_index()
+    if phase ~= kb.chart.phase then -- new phase of flight: back to automatic choice
+        kb.chart.phase = phase
+        kb.chart.set = nil
+        kb.chart.page = 1
+    end
+    local si = kb.chart.set or phase
+    local set = si and sets[si]
+    if not set or #set.pages == 0 then return nil end
+    kb.chart.page = math.max(1, math.min(kb.chart.page, #set.pages))
+    return set, set.pages[kb.chart.page], si
+end
+
+-- Loads at most one picture per call, never from inside a draw callback (see vfrkb_tick).
+local function load_wanted_image()
+    local file = kb.want_image
+    if not file or kb.images[file] ~= nil then return end
+    local path = CHART_BASE .. file
+    local f = io.open(path, "rb")
+    if not f then
+        kb.images[file] = false
+        logMsg("VFR charts: missing " .. path)
+        return
+    end
+    f:close()
+    logMsg("VFR charts: loading " .. file)
+    kb.images[file] = float_wnd_load_image(path) or false
+    logMsg("VFR charts: loaded " .. file .. " -> " .. tostring(kb.images[file]))
+end
+
+function vfrkb_chart_page(delta)
+    local set = current_chart()
+    if not set then return end
+    kb.chart.page = ((kb.chart.page - 1 + delta) % #set.pages) + 1
+end
+
+local function draw_chart_view(page)
+    if kb.chart.shown ~= page.file then -- a new page starts at its top-left corner
+        kb.chart.shown = page.file
+        kb.chart.rezoom = nil
+        imgui.SetScrollX(0)
+        imgui.SetScrollY(0)
+    end
+    local img = kb.images[page.file]
+    kb.want_image = page.file
+    if img == nil then
+        text_col(COL_DIM, "Loading chart...")
+        return
+    end
+    if img == false then
+        text_col(COL_RED, "Chart file missing - press 'Send to X-Plane' in the app again.")
+        return
+    end
+    local view_w, view_h = imgui.GetWindowWidth(), imgui.GetWindowHeight()
+    local w = math.max(100, view_w - 20) * ZOOMS[kb.chart.zoom]
+    local h = w * page.height / page.width
+    local x0, y0 = imgui.GetCursorPosX(), imgui.GetCursorPosY()
+    imgui.Image(img, w, h)
+
+    -- Drag to pan: an invisible button over the chart takes the mouse (a drag on
+    -- a plain image would move the window instead); while it is held, the view
+    -- scrolls with the mouse.
+    imgui.SetCursorPos(x0, y0)
+    imgui.InvisibleButton("vfrkb_chart_drag", w, h)
+    if imgui.IsItemActive() then
+        local mx, my = imgui.GetMousePos()
+        if type(mx) == "table" then mx, my = mx.x or mx[1], mx.y or mx[2] end -- ImVec2 as a table
+        local last = kb.chart.drag
+        if last then
+            imgui.SetScrollX(imgui.GetScrollX() - (mx - last[1]))
+            imgui.SetScrollY(imgui.GetScrollY() - (my - last[2]))
+        end
+        kb.chart.drag = { mx, my }
+    else
+        kb.chart.drag = nil
+    end
+
+    -- A zoom step keeps the point in the middle of the view where it is.
+    local rz = kb.chart.rezoom
+    if rz then
+        kb.chart.rezoom = nil
+        local v = kb.chart.view or { 0, 0 }
+        imgui.SetScrollX(math.max(0, (v[1] + view_w / 2) * rz - view_w / 2))
+        imgui.SetScrollY(math.max(0, (v[2] + view_h / 2) * rz - view_h / 2))
+    end
+    kb.chart.view = { imgui.GetScrollX(), imgui.GetScrollY() }
+end
+
+local function set_zoom(z)
+    z = math.max(1, math.min(#ZOOMS, z))
+    if z == kb.chart.zoom then return end
+    kb.chart.rezoom = ZOOMS[z] / ZOOMS[kb.chart.zoom] -- applied inside the view on the next draw
+    kb.chart.zoom = z
+end
+
+function vfrkb_chart_build_inner(wnd, x, y)
+    local sets = chart_sets()
+    if #sets == 0 then
+        text_col(COL_YELLOW, "No airport charts in the plan.")
+        imgui.TextUnformatted("Charts are downloaded by the app for German aerodromes (ED/ET);")
+        imgui.TextUnformatted("wait for them in the app, then press 'Send to X-Plane'.")
+        return
+    end
+    local set, page, si = current_chart()
+    for i, s in ipairs(sets) do
+        if i > 1 then imgui.SameLine() end
+        local label = (i == si and "> " or "") .. s.icao
+        if imgui.Button(label, 90, 24) then
+            kb.chart.set = i
+            kb.chart.page = 1
+        end
+    end
+    if not set then return end
+    imgui.SameLine()
+    if imgui.Button("<", 32, 24) then vfrkb_chart_page(-1) end
+    imgui.SameLine()
+    imgui.TextUnformatted(string.format(" %d/%d ", kb.chart.page, #set.pages))
+    imgui.SameLine()
+    if imgui.Button(">", 32, 24) then vfrkb_chart_page(1) end
+    imgui.SameLine()
+    if imgui.Button("-", 28, 24) then set_zoom(kb.chart.zoom - 1) end
+    imgui.SameLine()
+    if imgui.Button("+", 28, 24) then set_zoom(kb.chart.zoom + 1) end
+    imgui.SameLine()
+    imgui.TextUnformatted(string.format(" %gx", ZOOMS[kb.chart.zoom]))
+    if float_wnd_set_positioning_mode ~= nil then
+        imgui.SameLine()
+        if imgui.Button("Pop out", 70, 24) then kb.pending = "charts_popout" end
+    end
+    text_col(COL_DIM, page.title)
+
+    -- Scrollable view: drag to pan; mouse wheel scrolls, Shift+wheel sideways.
+    local flags = 0
+    local wf = imgui.constant and imgui.constant.WindowFlags
+    if wf and wf.HorizontalScrollbar then flags = wf.HorizontalScrollbar end
+    local child_h = math.max(100, imgui.GetWindowHeight() - imgui.GetCursorPosY() - 12)
+    imgui.BeginChild("vfrkb_chart_view", 0, child_h, false, flags)
+    local ok, err = pcall(draw_chart_view, page)
+    imgui.EndChild() -- always pair BeginChild/EndChild, even after an error
+    if not ok then error(err) end
+end
+
+function vfrkb_chart_build(wnd, x, y)
+    local ok, err = pcall(vfrkb_chart_build_inner, wnd, x, y)
+    if not ok then imgui.TextUnformatted("Chart draw error (safe): " .. tostring(err)) end
+end
+
+local function chart_default_geometry()
+    local m = main_monitor()
+    if not m then return nil end
+    -- Right of the kneeboard's default spot, on the main monitor.
+    local left = m.inLeft + WND_W + 80
+    local top = m.inTop - 60
+    local h = math.min(CHART_H, (m.inTop - m.inBottom) - 100)
+    return { left, top, left + CHART_W, top - h }
+end
+
+function vfrkb_charts_show()
+    if kb.chart.wnd ~= nil then return end
+    logMsg("VFR charts: opening window")
+    kb.chart.wnd = float_wnd_create(CHART_W, CHART_H, 1, true)
+    float_wnd_set_title(kb.chart.wnd, "VFR Charts")
+    local g = kb.chart.geom or chart_default_geometry()
+    if g and float_wnd_set_geometry ~= nil then
+        float_wnd_set_geometry(kb.chart.wnd, g[1], g[2], g[3], g[4])
+    else
+        float_wnd_set_position(kb.chart.wnd, 560, 40) -- left, bottom
+    end
+    float_wnd_set_imgui_builder(kb.chart.wnd, "vfrkb_chart_build")
+    float_wnd_set_onclose(kb.chart.wnd, "vfrkb_charts_on_close")
+end
+
+local function remember_chart_geometry()
+    if kb.chart.wnd == nil or float_wnd_get_geometry == nil then return end
+    local ok, l, t, r, b = pcall(float_wnd_get_geometry, kb.chart.wnd)
+    if ok and l and t and r and b then kb.chart.geom = { l, t, r, b } end
+end
+
+function vfrkb_charts_on_close(wnd)
+    remember_chart_geometry()
+    kb.chart.wnd = nil
+end
+
+function vfrkb_charts_toggle()
+    if kb.chart.wnd ~= nil then
+        remember_chart_geometry()
+        float_wnd_destroy(kb.chart.wnd)
+        kb.chart.wnd = nil
+    else
+        vfrkb_charts_show()
+    end
+end
+
+function vfrkb_tick()
+    vfrkb_poll()
+    if kb.chart.wnd ~= nil then load_wanted_image() end
+end
+
+-- Window actions requested by buttons run here, in the flight loop, outside any
+-- ImGui frame: every FlyWithLua window has its own ImGui context, and creating
+-- or changing a window mid-draw switches contexts under the running frame.
+function vfrkb_frame()
+    local action = kb.pending
+    if not action then return end
+    kb.pending = nil
+    if action == "charts_toggle" then
+        vfrkb_charts_toggle()
+    elseif action == "charts_popout" and kb.chart.wnd ~= nil and float_wnd_set_positioning_mode ~= nil then
+        pcall(float_wnd_set_positioning_mode, kb.chart.wnd, 4, -1) -- xplm_WindowPopOut
+    end
+end
+
 vfrkb_poll()
-do_often("vfrkb_poll()")
+do_often("vfrkb_tick()")
+do_every_frame("vfrkb_frame()")
+add_macro("VFR Kneeboard: toggle charts", "vfrkb_charts_toggle()")
+create_command("FlyWithLua/vfr_kneeboard/charts_toggle", "Toggle the VFR airport charts window", "vfrkb_charts_toggle()", "", "")
+create_command("FlyWithLua/vfr_kneeboard/charts_next", "VFR charts: next page", "vfrkb_chart_page(1)", "", "")
+create_command("FlyWithLua/vfr_kneeboard/charts_prev", "VFR charts: previous page", "vfrkb_chart_page(-1)", "", "")
 add_macro("VFR Kneeboard: toggle window", "vfrkb_toggle()")
 add_macro("VFR Kneeboard: reset window position", "vfrkb_reset_position()")
 create_command("FlyWithLua/vfr_kneeboard/toggle", "Toggle the VFR kneeboard window", "vfrkb_toggle()", "", "")

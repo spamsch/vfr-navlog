@@ -81,6 +81,25 @@
   {/if}
 </section>
 
+{#if r}
+  <section class="chartsec">
+    <span class="lbl">Airport charts</span>
+    {#each app.chartIcaos() as icao (icao)}
+      {@const c = app.charts[icao]}
+      {#if c === "loading"}
+        <span class="chip muted">{icao} · downloading…</span>
+      {:else if c && c.pages.length}
+        <button class="chip" onclick={() => app.openCharts(icao)} title={c.error ?? ""}>{icao} · {c.pages.length} pages</button>
+      {:else if c}
+        <span class="chip muted" title={c.error ?? ""}>{icao} · none</span>
+        {#if c.error && !c.error.includes("German")}
+          <button class="small" onclick={() => app.fetchCharts(icao, true)} title={c.error}>↻</button>
+        {/if}
+      {/if}
+    {/each}
+  </section>
+{/if}
+
 {#if r?.vors?.length}
   <section class="vorsec">
     <label>
@@ -355,6 +374,28 @@
   .empty {
     padding: 16px 12px;
     color: var(--muted);
+  }
+  .chartsec {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 12px;
+  }
+  .chartsec .lbl {
+    color: var(--muted);
+    margin-right: 4px;
+  }
+  .chip {
+    padding: 2px 8px;
+    font-size: 12px;
+    border-radius: 12px;
+  }
+  .chip.muted {
+    color: var(--muted);
+    border: 1px dashed var(--line);
   }
   .vorsec {
     padding: 8px 12px;

@@ -51,6 +51,11 @@ class FakeSim:
     def __init__(self, root: Path):
         self.lua = lupa.LuaRuntime(unpack_returned_tuples=True)
         self.texts: list[str] = []
+        self.images: list[tuple[float, float]] = []  # (w, h) of every imgui.Image call
+        self.children = 0  # open BeginChild calls (must be back to 0 after a draw)
+        self.mouse_down = False
+        self.mouse = (0.0, 0.0)
+        self.scroll = [0.0, 0.0]
         self.buttons: list[str] = []
         self.click: set[str] = set()
         g = self.lua.globals()
@@ -63,10 +68,16 @@ class FakeSim:
             vfrkb_nav1_flag, vfrkb_nav1_dme = 0, 0
             function dataref(name, path, mode, idx) end
             function do_often(s) end
+            function do_every_frame(s) end
             function add_macro(a, b) end
             function create_command(a, b, c, d, e) end
             function logMsg(s) end
-            function float_wnd_create() return {} end
+            in_build = false  -- true while a window's ImGui builder runs
+            function float_wnd_create()
+                -- In X-Plane this crashes: every window has its own ImGui context.
+                if in_build then error("window created during a draw") end
+                return {}
+            end
             function float_wnd_set_title() end
             wnd_pos, wnd_geom = nil, nil
             function float_wnd_set_position(w, left, bottom) wnd_pos = { left = left, bottom = bottom } end
@@ -79,7 +90,11 @@ class FakeSim:
             end
             function float_wnd_set_imgui_builder() end
             function float_wnd_set_onclose() end
-            function float_wnd_destroy() end
+            function float_wnd_destroy()
+                if in_build then error("window destroyed during a draw") end
+            end
+            loaded_images = {}
+            function float_wnd_load_image(path) loaded_images[#loaded_images + 1] = path; return #loaded_images end
         """)
         imgui = self.lua.table_from({
             "TextUnformatted": lambda s: self.texts.append(s),
@@ -87,6 +102,16 @@ class FakeSim:
             "SameLine": lambda *a: None, "Separator": lambda *a: None, "Spacing": lambda *a: None,
             "PushStyleColor": lambda *a: None, "PopStyleColor": lambda *a: None,
             "SetWindowFontScale": lambda *a: None,
+            "Image": lambda img, w, h, *a: self.images.append((w, h)),
+            "BeginChild": lambda *a: self._child(1), "EndChild": lambda *a: self._child(-1),
+            "GetWindowWidth": lambda: 740.0, "GetWindowHeight": lambda: 800.0,
+            "GetCursorPosX": lambda: 8.0, "GetCursorPosY": lambda: 80.0, "SetCursorPos": lambda x, y: None,
+            # Mouse and scrolling of the chart view: driven from the tests.
+            "InvisibleButton": lambda label, w, h: False,
+            "IsItemActive": lambda: self.mouse_down,
+            "GetMousePos": lambda: self.mouse,
+            "GetScrollX": lambda: self.scroll[0], "GetScrollY": lambda: self.scroll[1],
+            "SetScrollX": lambda v: self._set_scroll(0, v), "SetScrollY": lambda v: self._set_scroll(1, v),
         })
         imgui.constant = self.lua.table_from({"Col": self.lua.table_from({"Text": 0})})
         g.imgui = imgui
@@ -96,8 +121,33 @@ class FakeSim:
         self.texts.clear()
         self.buttons.clear()
         self.click = set(click)
-        self.lua.globals().vfrkb_build(None, 0, 0)
-        return "\n".join(self.texts)
+        return self._build("vfrkb_build")
+
+    def _child(self, d: int):
+        self.children += d
+
+    def _set_scroll(self, axis: int, v: float):
+        self.scroll[axis] = max(0.0, v)
+
+    def draw_charts(self, click: tuple[str, ...] = ()) -> str:
+        self.texts.clear()
+        self.buttons.clear()
+        self.click = set(click)
+        text = self._build("vfrkb_chart_build")
+        assert self.children == 0, "BeginChild/EndChild unbalanced"
+        return text
+
+    def _build(self, builder: str) -> str:
+        """Run a window builder the way X-Plane does; errors the script swallowed fail the test."""
+        g = self.lua.globals()
+        g.in_build = True
+        try:
+            g[builder](None, 0, 0)
+        finally:
+            g.in_build = False
+        text = "\n".join(self.texts)
+        assert "draw error" not in text, text
+        return text
 
     def set_time(self, t: float):
         self.lua.globals().vfrkb_flight_time = t

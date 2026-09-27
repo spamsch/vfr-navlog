@@ -14,10 +14,15 @@ import math
 import unicodedata
 from pathlib import Path
 
+from . import airport_charts
 from .config import PROJECT_ROOT
 
 SCRIPT_SRC = PROJECT_ROOT / "xplane" / "vfr_kneeboard.lua"
 PLAN_REL = Path("Output") / "vfr-navlog" / "kneeboard_plan.lua"
+CHARTS_REL = Path("Output") / "vfr-navlog" / "charts"
+# Chart pictures for X-Plane: JPEG like FlyWithLua's own image demo, and no edge
+# longer than this (a texture size every GPU/driver path handles).
+CHART_MAX_PX = 2048
 SCRIPT_REL = Path("Resources") / "plugins" / "FlyWithLua" / "Scripts" / "vfr_kneeboard.lua"
 
 _ASCII = {
@@ -80,10 +85,50 @@ def to_lua(value, indent: int = 0) -> str:
     raise TypeError(f"cannot write {type(value).__name__} to Lua")
 
 
+def _export_chart(src: Path, target: Path) -> tuple[int, int]:
+    """Write *src* as an RGB JPEG no larger than CHART_MAX_PX; returns (w, h)."""
+    from PIL import Image
+
+    with Image.open(src) as im:
+        im = im.convert("RGB")
+        im.thumbnail((CHART_MAX_PX, CHART_MAX_PX), Image.LANCZOS)
+        if not target.exists():
+            im.save(target, "JPEG", quality=90)
+        return im.size
+
+
+def copy_charts(icaos: list[str], xplane_root: Path, cache_root: Path = airport_charts.CACHE_ROOT) -> list[dict]:
+    """Export the cached chart pages of *icaos* next to the plan; never downloads.
+
+    File names carry the AIP issue, so a new issue gets new names and the
+    script loads fresh textures (FlyWithLua cannot reload an image in place).
+    """
+    out = []
+    for icao in dict.fromkeys(i.upper() for i in icaos if i):
+        have = airport_charts.cached(icao, cache_root)
+        if not have:
+            continue
+        dest = xplane_root / CHARTS_REL / icao
+        dest.mkdir(parents=True, exist_ok=True)
+        pages = []
+        for p in have["pages"]:
+            name = Path(p["file"]).with_suffix(".jpg").name
+            w, h = _export_chart(Path(p["path"]), dest / name)
+            pages.append({"title": p["title"], "file": f"charts/{icao}/{name}", "width": w, "height": h})
+        keep = {Path(p["file"]).name for p in pages}
+        for old in [*dest.glob("*.png"), *dest.glob("*.jpg")]:
+            if old.name not in keep:
+                old.unlink(missing_ok=True)
+        out.append({"icao": icao, "name": have.get("name", ""), "pages": pages})
+    return out
+
+
 def send(plan: dict, xplane_root: Path) -> dict:
     """Write the plan for the kneeboard and install/update the script. Returns what happened."""
     if not (xplane_root / "Resources" / "plugins").is_dir():
         raise FileNotFoundError(f"X-Plane not found at {xplane_root}")
+    plan = dict(plan)
+    plan["charts"] = copy_charts(plan.pop("chart_icaos", None) or [], xplane_root)
     plan_path = xplane_root / PLAN_REL
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = plan_path.with_suffix(".tmp")

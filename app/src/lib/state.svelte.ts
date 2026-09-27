@@ -2,13 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import { distanceNm, perpendicular, pointAlong, project, tileXY, type LatLon } from "./geo";
-import type { AircraftInfo, FieldLive, Landmark, PlanDoc, Resolved } from "./types";
+import type { AircraftInfo, AirportCharts, FieldLive, Landmark, PlanDoc, Resolved } from "./types";
 import { analyseLeg, candidatesForLeg, navLine, type LegRadial } from "./vor";
 
 const AUTOSAVE_KEY = "vfr-navlog-autosave";
 
+const WINDOWS = navigator.userAgent.includes("Windows");
 /** Tiles are served by the Rust `ofm` protocol (disk cache, network on a miss). */
-export const TILE_BASE = navigator.userAgent.includes("Windows") ? "http://ofm.localhost" : "ofm://localhost";
+export const TILE_BASE = WINDOWS ? "http://ofm.localhost" : "ofm://localhost";
+/** Airport chart pages, served by the Rust `chart` protocol from the chart cache. */
+export const CHART_BASE = WINDOWS ? "http://chart.localhost" : "chart://localhost";
 
 export function emptyDoc(): PlanDoc {
   return {
@@ -92,6 +95,10 @@ class AppState {
   fieldError = $state<string | null>(null);
   /** After the first "Send to X-Plane", plan edits are re-sent automatically. */
   xpSync = $state(false);
+  /** Airport charts by ICAO; "loading" while the download runs. */
+  charts = $state<Record<string, AirportCharts | "loading">>({});
+  /** Open chart viewer: airport and page index, or null. */
+  chartView = $state<{ icao: string; page: number } | null>(null);
 
   dirty = $derived(JSON.stringify(this.doc) !== this.savedJson);
 
@@ -110,6 +117,7 @@ class AppState {
     } catch (e) {
       this.error = `Python bridge: ${e}`;
     }
+    for (const icao of this.chartIcaos()) void this.fetchCharts(icao);
   }
 
   autosave() {
@@ -138,6 +146,7 @@ class AppState {
       this.savedJson = JSON.stringify(this.doc);
       this.selectedWp = 0;
       this.selectedLandmark = null;
+      for (const icao of this.chartIcaos()) void this.fetchCharts(icao);
     } catch (e) {
       this.error = String(e);
     }
@@ -209,6 +218,7 @@ class AppState {
       d.resolved = r;
       d.landmarks = d.landmarks.map((lm) => placeLandmark(lm, r));
       this.selectedWp = Math.min(this.selectedWp, newIdents.length - 1);
+      for (const icao of this.chartIcaos()) void this.fetchCharts(icao);
     } catch (e) {
       this.error = String(e);
     } finally {
@@ -430,6 +440,34 @@ class AppState {
     this.fitRoute++;
   }
 
+  // --- Airport charts --------------------------------------------------------------
+
+  /** Departure and destination, the airports charts are fetched for. */
+  chartIcaos(): string[] {
+    const wps = this.doc.resolved?.waypoints;
+    if (!wps?.length) return [];
+    return [...new Set([wps[0].ident, wps[wps.length - 1].ident].map((i) => i.toUpperCase()))];
+  }
+
+  async fetchCharts(icao: string, force = false) {
+    if (this.charts[icao] === "loading") return;
+    this.charts[icao] = "loading";
+    try {
+      this.charts[icao] = await navlog<AirportCharts>({ cmd: "charts", icao, force });
+    } catch (e) {
+      this.charts[icao] = { icao, pages: [], error: String(e) };
+    }
+  }
+
+  chartsFor(icao: string): AirportCharts | null {
+    const c = this.charts[icao.toUpperCase()];
+    return c && c !== "loading" ? c : null;
+  }
+
+  openCharts(icao: string, page = 0) {
+    this.chartView = { icao: icao.toUpperCase(), page };
+  }
+
   // --- X-Plane kneeboard (FlyWithLua window) ------------------------------------
 
   /** Everything the in-sim kneeboard shows, precomputed (the Lua side only draws). */
@@ -450,6 +488,7 @@ class AppState {
       route_key: wps.map((w) => w.ident).join(" "),
       title: `${wps[0].ident} -> ${dest.ident} (${r.aircraft.type})`,
       call_leg: r.call_leg_idx != null ? r.call_leg_idx + 1 : null,
+      chart_icaos: this.chartIcaos(), // cached pages are copied next to the plan by the bridge
       waypoints: wps.map((w, i) => ({ ident: w.ident, lat: w.lat, lon: w.lon, notes: this.doc.notes[i] ?? "", fixes: w.fixes })),
       legs: r.legs.map((l, k) => {
         const nav = this.legNav(k);

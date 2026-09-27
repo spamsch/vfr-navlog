@@ -35,11 +35,17 @@ npm run tauri dev
 - 1-in-60 helper: off-track distance → heading back to the waypoint or to parallel.
 - Destination: live VATSIM frequencies and ATIS, published frequencies, ILS per runway, runways, METAR with QNH — opens by itself on the tower-call leg and refreshes every 3 minutes.
 
+**Airport charts** (German aerodromes, ED/ET)
+- After a route is resolved, the departure and destination charts are downloaded from the DFS AIP (BasicVFR visual approach charts plus the aerodrome, ground movement and parking charts from BasicIFR) into `~/.cache/vfr-navlog/charts/<ICAO>/`. The cache is re-checked at most weekly and re-downloaded only when DFS publishes a new issue; offline, the cached set is used.
+- *Airport charts* in the Plan view and *Charts* in the Fly view's destination box open a viewer: airport tabs, page list, zoom 1–4× (+/−), drag to pan, ←/→ to flip pages, Esc to close.
+- DFS charts are for personal flight preparation only; they stay in the local cache and are never committed.
+
 **X-Plane kneeboard** (in-sim window, FlyWithLua NG+)
 - *Send to X-Plane* writes the plan to `<X-Plane>/Output/vfr-navlog/kneeboard_plan.lua` and installs `xplane/vfr_kneeboard.lua` into FlyWithLua's Scripts folder (reload Lua scripts once after the first install). After the first send, plan edits re-send automatically.
 - Bind `FlyWithLua/vfr_kneeboard/toggle` to a key or joystick button; `FlyWithLua/vfr_kneeboard/over_waypoint` logs "over the next waypoint now". Also under Plugins › FlyWithLua › Macros, together with *reset window position*.
 - Shows the current leg with a timer on sim time (pauses with the sim), times over waypoints with revised ETAs, checkpoints, notes, climb/descend warnings, the leg's VOR with **Tune NAV1/NAV2** (sets frequency and OBS) and the radial/DME expected now, and the destination frequencies/ILS/ATIS as of the last send.
 - Text is ASCII only (FlyWithLua's font has no umlauts); the in-sim flight log is separate from the app's Fly view.
+- **VFR Charts** window (kneeboard *Charts* button or `FlyWithLua/vfr_kneeboard/charts_toggle`; `charts_next` / `charts_prev` for stick buttons): the departure's airport charts before and on the first leg, the destination's from the tower-call leg on. Page flipping, zoom that keeps the view centre, drag to pan, mouse wheel, *Pop out* to move it to another monitor. Pages are sent as JPEG (≤ 2048 px) and load on first view.
 
 Plans save as `.vfrplan.json` (Ctrl+S / Ctrl+O), including the flight log; the working plan is also autosaved locally.
 

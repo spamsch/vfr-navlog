@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
+  import ChartViewer from "$lib/ChartViewer.svelte";
   import { pointAlong, type LatLon } from "$lib/geo";
   import Kneeboard from "$lib/Kneeboard.svelte";
   import MapView from "$lib/MapView.svelte";
@@ -24,6 +25,7 @@
     if (!app.xpSync) return;
     JSON.stringify(app.doc);
     app.field;
+    JSON.stringify(app.charts);
     const t = setTimeout(() => app.sendToXPlane(true), 2000);
     return () => clearTimeout(t);
   });
@@ -70,6 +72,8 @@
 </script>
 
 <svelte:window onkeydown={onKey} />
+
+<ChartViewer />
 
 <div class="app" class:fly={app.mode === "fly"}>
   <header>
