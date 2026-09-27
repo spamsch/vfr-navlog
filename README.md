@@ -14,10 +14,10 @@ Three plan sources are supported:
 
 All screenshots on this page come from one real run — EDDG → EDDK in an SR22, produced by the interactive session shown under [Interactive mode](#interactive-mode).
 
-1. **Navlog** (above) — header strip, frequency block with live VATSIM frequencies (GND/TWR/ATIS/DEL/APP + en-route radar), ATIS strip, leg-by-leg table (TC / MH / dist / GS / ETE / fuel) with computed VOR cross-checks per waypoint, fuel summary, planning assumptions, tower-call marker.
+1. **Navlog** (above) — header strip, frequency block with live VATSIM frequencies (GND/TWR/ATIS/DEL/APP + en-route radar), ATIS strip, leg-by-leg table with computed VOR cross-checks per waypoint, fuel summary, planning assumptions, tower-call marker. The table comes in two layouts (see [Navlog table layouts](#navlog-table-layouts)); the screenshot above shows `classic`.
 2. **Waypoint briefing pages** (optional, `--wp-maps`) — one page per waypoint, chart and orthophoto side by side, with that waypoint's VOR radials. See [Waypoint map pages](#waypoint-map-pages-chart--orthophoto).
-3. **FIS / Radar phraseology** — bilingual (DE/EN) dialogue cheat-sheet for the en-route FIS or radar contact. Adapts automatically: when Langen / Bremen / München Radar is online on VATSIM, the page title, note, and squawk guidance update to reflect radar service rather than basic FIS.
-4. **CTR phraseology** — the full inbound sequence at the destination: initial tower call, full position report with ATIS letter, CTR entry clearance via Whiskey, Whiskey call, downwind join, landing clearance, runway vacated, taxi to GA apron. Variations table covers holds outside the CTR, squawk assignments, and traffic sequencing.
+3. **FIS / Radar phraseology** (optional, `--phraseology`) — bilingual (DE/EN) dialogue cheat-sheet for the en-route FIS or radar contact. Adapts automatically: when Langen / Bremen / München Radar is online on VATSIM, the page title, note, and squawk guidance update to reflect radar service rather than basic FIS.
+4. **CTR phraseology** (optional, `--phraseology`) — the full inbound sequence at the destination: initial tower call, full position report with ATIS letter, CTR entry clearance via Whiskey, Whiskey call, downwind join, landing clearance, runway vacated, taxi to GA apron. Variations table covers holds outside the CTR, squawk assignments, and traffic sequencing.
 5. **Destination briefing** — airport data (elevation, TA/TL, IATA), runway table with ILS LOC frequencies from X-Plane's `earth_nav.dat`, communication frequencies, live VATSIM ATIS text, and a navaid reference table with Morse idents for every VOR used in the plan.
 6. **Weather briefing** — two-column METAR + TAF for departure and destination (via VATSIM weather proxy), parsed key values (wind, visibility, ceiling, QNH, phenomena), VFR / MVFR / IFR go/no-go assessment table, en-route radar banner.
 
@@ -221,6 +221,8 @@ python3 navlog.py \
 | `--map-radius-nm` | `3` | Map excerpt radius in NM (clamped 1–5). Only meaningful with `--wp-maps`. |
 | `--map-base` | `both` | Which base layers per waypoint page: `both` (chart + photo), `chart`, or `photo`. Only meaningful with `--wp-maps`. |
 | `--fms` | off | Write an X-Plane FMS v3 flight plan to `Output/FMS plans/`. |
+| `--table` | `notes` | Nav-table layout: `notes` (in-flight columns, wide notes column, destination ILS) or `classic` (adds TAS, wind, WCA, variation, running totals, fuel). See [Navlog table layouts](#navlog-table-layouts). |
+| `--phraseology` | off | Append the two phraseology (Sprechgruppen) pages: FIS / Radar en route and CTR entry. |
 | `--call-tower-nm` | `10` | NM remaining threshold for the tower-call leg marker. `0` disables. |
 | `--xplane` | Steam default (macOS / Windows) | X-Plane 12 root. Pass `--xplane ""` to skip the destination-briefing page. |
 | `--fpl-eobt` | — | Generate an ICAO FPL with this EOBT (HHMM UTC). Triggers FPL output. |
@@ -307,9 +309,17 @@ Edit `aircraft_c172.json` or write your own. The script reads:
 
 The bundled `aircraft_c172.json` uses Cessna 172S POH-typical numbers at 65% power. **Verify against your aircraft's POH before flying.**
 
+## Navlog table layouts
+
+`--table notes` (default) keeps only what you scan in flight — Waypoint, VOR info, Alt, TC, MH, Dist, GS, ETE, ETO / ATO — and gives the freed width (about 100 mm) to a **Notizen** column. Rows are taller (8 mm) for handwriting. The destination row's notes cell is pre-filled with the destination's ILS / LOC frequencies from X-Plane's `earth_nav.dat` (e.g. `ILS 13L IKES 110.90`), when available; the tower-call marker also goes into the notes column.
+
+`--table classic` is the original full planning table: it adds TAS, wind, WCA, variation, running distance and time totals, and fuel per leg. Totals and fuel still appear in the fuel summary and planning assumptions below the table in both layouts.
+
+The interactive mode asks for the layout.
+
 ## Phraseology pages
 
-Both pages are templated to the registration, aircraft type, departure, and destination from the plan.
+Off by default; add `--phraseology` (or answer yes in the interactive mode) to append them. Both pages are templated to the registration, aircraft type, departure, and destination from the plan.
 
 ![CTR entry phraseology — bilingual dialogue script for the EDDK inbound](docs/phraseology.png)
 

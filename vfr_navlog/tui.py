@@ -344,6 +344,14 @@ def _tui() -> RunConfig:
             chart_source = {"1": "ofm", "2": "dfs"}.get(_cchoice, "ofm")
 
     # --- FMS ---
+    h("Navlog-Tabelle")
+    print(f"  {DIM}[1] Notizen (Flugspalten + breite Notizspalte, ILS am Ziel)  "
+          f"[2] Klassisch (TAS, Wind, WCA, Summen, Fuel){R}")
+    table_style = {"1": "notes", "2": "classic"}.get(input("  → [1]: ").strip() or "1", "notes")
+
+    h("Sprechgruppen-Seiten anhängen?  (FIS/Radar + CTR)")
+    phraseology = input("  → [y/N]: ").strip().lower() in ("y", "yes")
+
     h("X-Plane FMS export")
     fms_dir = DEFAULT_XPLANE / "Output" / "FMS plans"
     xp_found = DEFAULT_XPLANE.exists()
@@ -365,6 +373,8 @@ def _tui() -> RunConfig:
         navigraph=navigraph,
         plan_path=plan_path,
         route=route,
+        table_style=table_style,
+        phraseology=phraseology,
         aircraft_path=aircraft_path,
         wind=parse_wind(wind_str),
         wind_was_default=(wind_str == "0/0"),

@@ -200,6 +200,8 @@ class RenderContext:
     navaids: list = field(default_factory=list)  # distinct RadialFix per station, for the reference block
     wp_maps: list = field(default_factory=list)  # per-waypoint WaypointLayers | None, in route order
     dep_info: AirportInfo | None = None  # departure airport, for standard-frequency fallback
+    table_style: str = "notes"  # nav-table layout: "notes" (in-flight + notes column) | "classic"
+    phraseology: bool = False   # append the FIS/Radar and CTR phraseology (Sprechgruppen) pages
 
 
 @dataclass
@@ -230,3 +232,5 @@ class RunConfig:
     map_base: str = "both"   # "both" | "chart" | "photo"; only meaningful with wp_maps
     chart_source: str = "ofm"  # "ofm" | "dfs" (official ICAO 500k, personal use only)
     route: str | None = None   # pasted route string, e.g. copied from Navigraph Charts
+    table_style: str = "notes"
+    phraseology: bool = False

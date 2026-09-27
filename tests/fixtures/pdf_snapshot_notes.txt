@@ -1,0 +1,70 @@
+Flugdurchführungsplan VFR
+Datum
+ 2026-07-04
+von
+ EDDV  Hannover
+nach
+ EDLI  Bielefeld
+LFZ-Muster
+ C172S
+LFZ-Kennz.
+ D-EIYD
+ Freigaben / Wetter / Info  Frequenzen   (Standard)
+ EDDV (Abflug)  EDLI (Ziel)
+ Ground
+ Tower
+ Info / ATIS
+ Radar / FIS
+UNICOM (kein ATC):  122.800 MHz
+ Zeiten (UTC)
+ ETD  ATD
+ ETA  ATA
+ SS
+ Platz  Code  RWY  TL/FL  Zeit UTC  Wind °/kt  Sicht  Wolken  T/Td °C  QNH  Tendenz / Bemerkungen
+  EDDV
+  EDLI
+  Ausweich
+Waypoint
+VOR
+Info
+Alt
+ft
+TC
+°
+MH
+°
+Dist
+NM
+GS
+kt
+ETE
+min
+ETO / ATO Notizen
+ EDDV  Hannover  183
+ NIE  Nienburg  4500  303  296  20.5  84  15  → EDLI TWR rufen
+ EDLI  Bielefeld  433  211  213  47.7  87  33
+TEST SNAPSHOT
+=== PAGE ===
+ Kraftstoffberechnung
+ Anlassen / Rollen      2.0 L
+ Steigflug      3.8 L
+ Reiseflug (Trip)     26.3 L
+ An- / Abflug      5.5 L
+ Ausweichflugplatz      0.0 L
+ Reserve (30 min)     16.6 L
+ Mindest-Kraftstoffbedarf     54.2 L
+ Kraftstoff-Vorrat    201.0 L
+ Extra-Kraftstoff    146.8 L
+ Sichere Flugzeit (max − 30 min)  5:32
+ Planungsannahmen
+ Wind: 270°/10 kt (uniform alle Schenkel)
+ Magnetische Variation: +4.0°
+ AIRAC-Zyklus: 2607
+ TAS Reise: 93 kt
+ Kraftstoffverbrauch: 33.3 L/h
+ Gesamtstrecke: 68.2 NM
+ Gesamtzeit (Reise): 47 min
+ Gesamtkraftstoff (Trip): 26.3 L
+ Ruf EDLI TWR ab NIE (48 NM)
+ Bemerkungen / Unterschrift Pilot
+TEST SNAPSHOT

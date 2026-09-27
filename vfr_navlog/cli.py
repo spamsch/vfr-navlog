@@ -88,6 +88,11 @@ def _build_parser() -> argparse.ArgumentParser:
                          "or dfs (official DFS ICAO 1:500,000 via ais.dfs.de — © DFS, "
                          "personal flight-preparation use only, do not redistribute). "
                          "Only meaningful with --wp-maps.")
+    ap.add_argument("--table", dest="table_style", choices=["notes", "classic"], default="notes",
+                    help="Nav-table layout: notes (default; in-flight columns, wide notes column, "
+                         "destination ILS) or classic (full planning columns incl. TAS, wind, WCA, totals, fuel).")
+    ap.add_argument("--phraseology", action="store_true", default=False,
+                    help="Append the FIS/Radar and CTR phraseology (Sprechgruppen) pages.")
     fpl_grp = ap.add_argument_group("ICAO FPL output  (my.vatsim.net import)")
     fpl_grp.add_argument("--fpl-eobt", default=None, metavar="HHMM",
                          help="Generate ICAO FPL with this EOBT (UTC), e.g. 1030. "
@@ -142,6 +147,8 @@ def _runconfig_from_cli(args: argparse.Namespace) -> RunConfig:
         map_base=args.map_base,
         chart_source=args.chart_source,
         route=args.route,
+        table_style=args.table_style,
+        phraseology=args.phraseology,
     )
 
 
@@ -306,6 +313,7 @@ def run(config: RunConfig) -> None:
         fir_icaos=fir_icaos, source_note=source_note,
         call_tower_nm=config.call_tower_nm, with_dfs_charts=config.with_dfs_charts,
         navaids=navaids, wp_maps=wp_maps, dep_info=dep_info,
+        table_style=config.table_style, phraseology=config.phraseology,
     )
     render(ctx, out)
     print(f"Wrote {out}")

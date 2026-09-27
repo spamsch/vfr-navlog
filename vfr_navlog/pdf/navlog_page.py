@@ -62,7 +62,8 @@ def render_navlog_page(pdf, font, ctx, date_str: str) -> None:
                               std_dep_freqs, std_dest_freqs)
     cum_dist, cum_ete, cum_fuel, current_y = _draw_nav_table(
         pdf, font, pw, plan, legs, wind, magvar, perf,
-        nav_y, call_leg_idx, call_text, _note_text, usable_bottom)
+        nav_y, call_leg_idx, call_text, _note_text, usable_bottom,
+        style=ctx.table_style, dest_info=ctx.dest_info)
     _draw_fuel_block(pdf, font, pw, plan, aircraft, legs, wind, magvar, perf,
                      destination, current_y, usable_bottom,
                      cum_dist, cum_ete, cum_fuel,
@@ -264,48 +265,84 @@ def _draw_header_block(pdf, font, pw, departure, destination, aircraft,
     return y2 + atis_h + 3
 
 
+# Nav-table layouts: (key, header, width mm, align). Width 0 takes the remaining
+# page width. "classic" carries the full planning computation; "notes" keeps
+# only what is scanned in flight and gives the freed width to a notes column.
+TABLE_STYLES = {
+    "classic": [
+        ("wp",       "Waypoint",   46, "L"),
+        ("vor",      "VOR\nInfo",  34, "C"),
+        ("alt",      "Alt\nft",    12, "C"),
+        ("tas",      "TAS\nkt",    12, "C"),
+        ("wind",     "Wind\n°/kt", 16, "C"),
+        ("tc",       "TC\n°",      12, "C"),
+        ("wca",      "WCA\n°",     12, "C"),
+        ("var",      "Var\n°",     10, "C"),
+        ("mh",       "MH\n°",      12, "C"),
+        ("dist",     "Dist\nNM",   14, "C"),
+        ("cum_dist", "Total\nNM",  14, "C"),
+        ("gs",       "GS\nkt",     12, "C"),
+        ("ete",      "ETE\nmin",   14, "C"),
+        ("cum_ete",  "Total\nmin", 14, "C"),
+        ("fuel",     "Fuel\nL",    12, "C"),
+        ("eto",      "ETO / ATO",  25, "L"),
+    ],
+    "notes": [
+        ("wp",       "Waypoint",   46, "L"),
+        ("vor",      "VOR\nInfo",  34, "C"),
+        ("alt",      "Alt\nft",    12, "C"),
+        ("tc",       "TC\n°",      12, "C"),
+        ("mh",       "MH\n°",      12, "C"),
+        ("dist",     "Dist\nNM",   14, "C"),
+        ("gs",       "GS\nkt",     12, "C"),
+        ("ete",      "ETE\nmin",   14, "C"),
+        ("eto",      "ETO / ATO",  25, "L"),
+        ("notes",    "Notizen",     0, "L"),
+    ],
+}
+# Taller rows in the notes layout leave room for handwriting.
+ROW_HEIGHTS = {"classic": 6.5, "notes": 8.0}
+
+# Columns the pilot actively scans in cruise; printed larger + bold.
+_HIGHLIGHT = {"tc", "mh", "dist", "ete", "gs"}
+
+
+def _ils_lines(dest_info) -> list[str]:
+    """Destination ILS/LOC frequencies, e.g. ['ILS 14L IKOE 110.90', ...], by runway."""
+    if dest_info is None:
+        return []
+    return [f"ILS {ils.runway} {ils.ident} {ils.freq_mhz:.2f}"
+            for ils in sorted(dest_info.ils_locs, key=lambda l: l.runway)]
+
+
 def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
-                    nav_y, call_leg_idx, call_text, _note_text, usable_bottom):
+                    nav_y, call_leg_idx, call_text, _note_text, usable_bottom,
+                    style="notes", dest_info=None):
     # ---------- nav table ----------
-    columns = [
-        ("Waypoint",        46, "L"),
-        ("VOR\nInfo",       34, "C"),
-        ("Alt\nft",         12, "C"),
-        ("TAS\nkt",         12, "C"),
-        ("Wind\n°/kt",      16, "C"),
-        ("TC\n°",           12, "C"),
-        ("WCA\n°",          12, "C"),
-        ("Var\n°",          10, "C"),
-        ("MH\n°",           12, "C"),
-        ("Dist\nNM",        14, "C"),
-        ("Total\nNM",       14, "C"),
-        ("GS\nkt",          12, "C"),
-        ("ETE\nmin",        14, "C"),
-        ("Total\nmin",      14, "C"),
-        ("Fuel\nL",         12, "C"),
-        ("ETO / ATO",       25, "L"),
-    ]
-    total_w = sum(w for _, w, _ in columns)
+    spec = TABLE_STYLES[style]
+    fixed_w = sum(w for _, _, w, _ in spec)
+    columns = [(key, name, w or (pw - fixed_w), a) for key, name, w, a in spec]
+    total_w = sum(w for _, _, w, _ in columns)
     if total_w > pw:
         scale = pw / total_w
-        columns = [(name, w * scale, a) for name, w, a in columns]
+        columns = [(key, name, w * scale, a) for key, name, w, a in columns]
 
-    # Columns the pilot actively scans in cruise; printed larger + bold.
-    highlight = {"TC\n°", "MH\n°", "Dist\nNM", "ETE\nmin", "GS\nkt"}
-    vor_col_idx = next(i for i, (n, _, _) in enumerate(columns) if n.startswith("VOR"))
+    # The tower-call annotation goes into the last column (ETO / ATO or Notizen).
+    call_key = columns[-1][0]
+    ils_lines = _ils_lines(dest_info) if style == "notes" else []
 
     header_h = 8
-    row_h = 6.5
+    row_h = ROW_HEIGHTS[style]
 
     def _draw_nav_header(at_y: float) -> None:
         cx = pdf.l_margin
-        for col_name, col_w, _ in columns:
-            pdf.set_xy(cx, at_y)
-            if col_name in highlight:
-                pdf.set_font(font, "B", 9)
-            else:
-                pdf.set_font(font, "B", 7)
-            pdf.multi_cell(col_w, header_h / 2, col_name, border=1, align="C")
+        for key, col_name, col_w, _ in columns:
+            # Frame the full header height, then centre one- or two-line labels in it.
+            pdf.rect(cx, at_y, col_w, header_h)
+            n_lines = col_name.count("\n") + 1
+            pdf.set_xy(cx, at_y + (header_h - n_lines * header_h / 2) / 2)
+            pdf.set_font(font, "B", 9 if key in _HIGHLIGHT else 7)
+            pdf.multi_cell(col_w, header_h / 2, col_name, border=0, align="C")
             cx += col_w
 
     _draw_nav_header(nav_y)
@@ -331,15 +368,14 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
         ry = current_y
         pdf.set_fill_color(245, 245, 245) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
 
+        values: dict[str, str] = {}
         if i == 0:
             wp = plan.waypoints[0]
-            row = [
-                f"{wp.ident}  {wp.name}",
-                wp.vor_info or wp.freq or "",
-                fmt_int(wp.alt_ft or 0) if wp.alt_ft else "",
-                "", "", "", "", "", "",
-                "", "", "", "", "", "", "",
-            ]
+            values = {
+                "wp": f"{wp.ident}  {wp.name}",
+                "vor": wp.vor_info or wp.freq or "",
+                "alt": fmt_int(wp.alt_ft or 0) if wp.alt_ft else "",
+            }
         elif i < len(plan.waypoints):
             leg = legs[i - 1]
             cum_dist += leg.distance_nm
@@ -347,26 +383,23 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
             cum_fuel += leg.fuel_l
             wp = plan.waypoints[i]
             first_leg = (i == 1)
-            row = [
-                f"{wp.ident}  {wp.name}",
-                wp.vor_info or wp.freq or "",
-                fmt_int(_effective_leg_alt(plan, i)) if i < len(plan.waypoints) - 1 else fmt_int(wp.alt_ft or 0),
-                fmt_int(perf.get("tas_cruise", 0)) if first_leg else "",
-                f"{int(wind[0]):03d}/{int(wind[1]):02d}" if first_leg else "",
-                fmt_int(leg.tc),
-                f"{leg.wca:+.0f}",
-                f"{magvar:+.1f}" if first_leg else "",
-                fmt_int(leg.mh),
-                f"{leg.distance_nm:.1f}",
-                f"{cum_dist:.1f}",
-                fmt_int(leg.gs_kt),
-                f"{leg.ete_min:.0f}",
-                f"{cum_ete:.0f}",
-                f"{leg.fuel_l:.1f}",
-                "",
-            ]
-        else:
-            row = [""] * len(columns)
+            values = {
+                "wp": f"{wp.ident}  {wp.name}",
+                "vor": wp.vor_info or wp.freq or "",
+                "alt": fmt_int(_effective_leg_alt(plan, i)) if i < len(plan.waypoints) - 1 else fmt_int(wp.alt_ft or 0),
+                "tas": fmt_int(perf.get("tas_cruise", 0)) if first_leg else "",
+                "wind": f"{int(wind[0]):03d}/{int(wind[1]):02d}" if first_leg else "",
+                "tc": fmt_int(leg.tc),
+                "wca": f"{leg.wca:+.0f}",
+                "var": f"{magvar:+.1f}" if first_leg else "",
+                "mh": fmt_int(leg.mh),
+                "dist": f"{leg.distance_nm:.1f}",
+                "cum_dist": f"{cum_dist:.1f}",
+                "gs": fmt_int(leg.gs_kt),
+                "ete": f"{leg.ete_min:.0f}",
+                "cum_ete": f"{cum_ete:.0f}",
+                "fuel": f"{leg.fuel_l:.1f}",
+            }
 
         # Computed VOR cross-checks for this waypoint. Manual vor_info text (put
         # into the fallback string above) overrides them; that is why we clear
@@ -378,19 +411,20 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
             row_fixes = []
 
         # If this row is the tower-call marker, inject the call annotation into
-        # the last (ETO / ATO) cell.
+        # the last column.
         is_call_row = (call_leg_idx is not None and i == call_leg_idx and i < len(plan.waypoints) - 1)
+        is_dest_row = (i == len(plan.waypoints) - 1)
 
         cx = pdf.l_margin
-        for col_idx, ((name, w, align), val) in enumerate(zip(columns, row)):
+        for key, _name, w, align in columns:
+            val = values.get(key, "")
             pdf.set_xy(cx, ry)
-            is_last = (col_idx == len(columns) - 1)
-            if is_call_row and is_last:
+            if is_call_row and key == call_key:
                 pdf.set_font(font, "B", 9)
                 pdf.set_text_color(180, 0, 0)
                 pdf.cell(w, row_h, " " + call_text, border=1, align="L", fill=True)
                 pdf.set_text_color(0, 0, 0)
-            elif col_idx == vor_col_idx and row_fixes:
+            elif key == "vor" and row_fixes:
                 # Up to two fixes stacked in the cell at 6.5 pt.
                 pdf.cell(w, row_h, "", border=1, fill=True)
                 pdf.set_font(font, "", 6.5)
@@ -398,7 +432,17 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
                 for li, fx in enumerate(row_fixes[:2]):
                     pdf.set_xy(cx + 0.5, ry + li * line_h + 0.3)
                     pdf.cell(w - 1.0, line_h, _fix_line(fx), border=0, align="L")
-            elif name in highlight:
+            elif key == "notes" and is_dest_row and ils_lines:
+                # Destination ILS frequencies, two per line; the rest of the
+                # notes cell stays free for writing.
+                pdf.cell(w, row_h, "", border=1, fill=True)
+                pdf.set_font(font, "B", 7)
+                line_h = row_h / 2
+                pairs = ["   ·   ".join(ils_lines[k:k + 2]) for k in range(0, len(ils_lines), 2)]
+                for li, text in enumerate(pairs[:2]):
+                    pdf.set_xy(cx + 0.5, ry + li * line_h + 0.3)
+                    pdf.cell(w - 1.0, line_h, text, border=0, align="L")
+            elif key in _HIGHLIGHT:
                 pdf.set_font(font, "B", 10)
                 pdf.cell(w, row_h, " " + str(val) if val else "", border=1, align=align, fill=True)
             else:

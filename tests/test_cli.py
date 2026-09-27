@@ -53,10 +53,33 @@ def test_run_parallel_fetch_stubbed(tmp_path, monkeypatch):
 
     assert out.exists()
     reader = pypdf.PdfReader(str(out))
-    # navlog page + 2 phraseology + weather briefing page
-    assert len(reader.pages) >= 4
+    # navlog page(s) + weather briefing page; phraseology is opt-in
     text = "\n".join(p.extract_text() for p in reader.pages)
     assert "Wetterbriefing" in text
+    assert "Sprechgruppen" not in text
+    assert "Notizen" in text
+
+
+def test_run_phraseology_and_classic_table_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: None)
+    cfg = _config(tmp_path / "n3.pdf")
+    cfg.vatsim = False
+    cfg.phraseology = True
+    cfg.table_style = "classic"
+    cli.run(cfg)
+    text = "\n".join(p.extract_text() for p in pypdf.PdfReader(str(tmp_path / "n3.pdf")).pages)
+    assert "Sprechgruppen" in text
+    assert "WCA" in text and "Notizen" not in text
+
+
+def test_table_and_phraseology_flags():
+    args = cli._build_parser().parse_args(["--plan", "x.lnmpln", "--aircraft", "a.json"])
+    config = cli._runconfig_from_cli(args)
+    assert config.table_style == "notes" and config.phraseology is False
+    args = cli._build_parser().parse_args(
+        ["--plan", "x.lnmpln", "--aircraft", "a.json", "--table", "classic", "--phraseology"])
+    config = cli._runconfig_from_cli(args)
+    assert config.table_style == "classic" and config.phraseology is True
 
 
 def test_run_no_vatsim_offline(tmp_path, monkeypatch):

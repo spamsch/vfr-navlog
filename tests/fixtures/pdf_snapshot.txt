@@ -24,7 +24,8 @@ UNICOM (kein ATC):  122.800 MHz
   EDDV
   EDLI
   Ausweich
-Waypoint VOR
+Waypoint
+VOR
 Info
 Alt
 ft

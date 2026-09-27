@@ -17,7 +17,12 @@ from vfr_navlog.lnmpln import parse_lnmpln
 from vfr_navlog.model import RenderContext
 
 FIXTURES = Path(__file__).parent / "fixtures"
-SNAPSHOT = FIXTURES / "pdf_snapshot.txt"
+# (table_style, phraseology) → snapshot file. "classic" + phraseology is the
+# original layout and must stay byte-identical; "notes" is the default.
+SNAPSHOTS = {
+    ("classic", True): FIXTURES / "pdf_snapshot.txt",
+    ("notes", False): FIXTURES / "pdf_snapshot_notes.txt",
+}
 
 
 class _FrozenDateTime(datetime):
@@ -26,7 +31,7 @@ class _FrozenDateTime(datetime):
         return cls(2026, 7, 4, 10, 0, 0, tzinfo=tz)
 
 
-def _render_text(tmp_path: Path) -> str:
+def _render_text(tmp_path: Path, table_style: str, phraseology: bool) -> str:
     plan = parse_lnmpln(FIXTURES / "sample.lnmpln")
     aircraft = {
         "type": "C172S",
@@ -47,7 +52,7 @@ def _render_text(tmp_path: Path) -> str:
         plan=plan, aircraft=aircraft, legs=legs, wind=wind, magvar=magvar,
         vatsim=None, dest_info=None, weather=None, field_wx={},
         fir_icaos=[], source_note="TEST SNAPSHOT", call_tower_nm=10.0,
-        with_dfs_charts=False,
+        with_dfs_charts=False, table_style=table_style, phraseology=phraseology,
     )
     vfr_navlog.pdf.render(ctx, out)
     reader = pypdf.PdfReader(str(out))
@@ -60,10 +65,12 @@ def _freeze_time(monkeypatch):
     monkeypatch.setattr(vfr_navlog.pdf, "datetime", _FrozenDateTime)
 
 
-def test_pdf_text_snapshot(tmp_path):
-    text = _render_text(tmp_path)
-    if not SNAPSHOT.exists():
-        SNAPSHOT.write_text(text, encoding="utf-8")
+@pytest.mark.parametrize("table_style,phraseology", list(SNAPSHOTS))
+def test_pdf_text_snapshot(tmp_path, table_style, phraseology):
+    snapshot = SNAPSHOTS[(table_style, phraseology)]
+    text = _render_text(tmp_path, table_style, phraseology)
+    if not snapshot.exists():
+        snapshot.write_text(text, encoding="utf-8")
         pytest.skip("snapshot created; re-run to compare")
-    expected = SNAPSHOT.read_text(encoding="utf-8")
+    expected = snapshot.read_text(encoding="utf-8")
     assert text == expected

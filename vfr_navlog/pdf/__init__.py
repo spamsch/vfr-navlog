@@ -31,7 +31,8 @@ def render(ctx: RenderContext, out: Path) -> None:
     # Per-waypoint chart pages follow (kneeboard order).
     render_waypoint_pages(pdf, font, ctx)
 
-    render_phraseology(pdf, font, ctx.plan, ctx.aircraft, ctx.vatsim, ctx.fir_icaos or [])
+    if ctx.phraseology:
+        render_phraseology(pdf, font, ctx.plan, ctx.aircraft, ctx.vatsim, ctx.fir_icaos or [])
 
     if ctx.dest_info is not None:
         render_destination_page(pdf, font, ctx.dest_info, ctx.vatsim, ctx.navaids)
