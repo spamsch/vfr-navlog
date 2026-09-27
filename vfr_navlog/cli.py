@@ -22,7 +22,7 @@ from .model import (
     VatsimSnapshot,
     WeatherBriefing,
 )
-from .navigraph import read_navigraph_flight
+from .navigraph import plan_from_route, read_navigraph_flight
 from .pdf import render
 from .tui import _tui
 from .vatsim import _german_firs_for_route, fetch_vatsim
@@ -45,6 +45,9 @@ def _build_parser() -> argparse.ArgumentParser:
     src.add_argument("--plan", type=Path, help="Little Navmap .lnmpln file")
     src.add_argument("--navigraph", action="store_true",
                      help="Read the active flight plan directly from Navigraph Charts (macOS).")
+    src.add_argument("--route",
+                     help="Route string, e.g. copied from Navigraph Charts: "
+                          "'EDDG DCT 520230N0074048E HMM DCT EDDK'. Idents resolve via X-Plane nav data.")
     ap.add_argument("--aircraft", required=True, type=Path)
     ap.add_argument("--wind", default="0/0", help="Wind aloft, DDD/SS, e.g. 270/15")
     ap.add_argument("--magvar", default="4E", help="Magnetic variation, e.g. 4E or -2.5")
@@ -138,6 +141,7 @@ def _runconfig_from_cli(args: argparse.Namespace) -> RunConfig:
         map_radius_nm=max(1.0, min(5.0, float(args.map_radius_nm))),
         map_base=args.map_base,
         chart_source=args.chart_source,
+        route=args.route,
     )
 
 
@@ -156,6 +160,12 @@ def run(config: RunConfig) -> None:
         plan = read_navigraph_flight(xplane_path)
         source_note = (
             "Erzeugt aus Navigraph Charts — Werte ohne Gewähr. "
+            "Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
+        )
+    elif config.route:
+        plan = plan_from_route(config.route, xplane_path)
+        source_note = (
+            "Erzeugt aus Route-String — Werte ohne Gewähr. "
             "Vor dem Flug gegen aktuelle Briefing-Unterlagen prüfen."
         )
     else:

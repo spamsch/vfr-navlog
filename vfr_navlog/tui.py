@@ -9,7 +9,7 @@ from .config import DEFAULT_XPLANE, PROJECT_ROOT
 from .exports import _ask_fpl_fields
 from .lnmpln import parse_lnmpln, parse_magvar, parse_wind
 from .model import Plan, RunConfig
-from .navigraph import read_navigraph_flight
+from .navigraph import plan_from_route, read_navigraph_flight
 from .weather import _wind_from_metar, fetch_metar
 
 
@@ -41,20 +41,37 @@ def _tui() -> RunConfig:
     h("Plan source")
     print("  [1]  Little Navmap .lnmpln file")
     print("  [2]  Navigraph Charts  (reads live from the app, macOS only)")
+    print("  [3]  Paste a route string  (e.g. copied from Navigraph Charts)")
     while True:
         src = input("  → [1]: ").strip() or "1"
-        if src in ("1", "2"):
+        if src in ("1", "2", "3"):
             break
-        print("  Enter 1 or 2.")
+        print("  Enter 1, 2 or 3.")
 
     navigraph = src == "2"
+    route: str | None = None
     plan_path: Path | None = None
     _preview: Plan | None = None
 
     dep_icao: str | None = None
     cruise_alt_default: float = 2500.0
 
-    if not navigraph:
+    if src == "3":
+        h("Route  (e.g. EDDG DCT 520230N0074048E HMM DCT EDDK)")
+        while True:
+            route = input("  Route: ").strip()
+            if len(route.split()) >= 2:
+                break
+            print("  (need at least departure and destination)")
+        try:
+            _preview = plan_from_route(route, DEFAULT_XPLANE)
+            dep_icao = _preview.waypoints[0].ident
+            cruise_alt_default = _preview.cruise_alt_ft
+            print(f"  {G}Loaded: {_preview.waypoints[0].ident} → {_preview.waypoints[-1].ident}  "
+                  f"({len(_preview.waypoints)} waypoints){R}")
+        except BaseException as _exc:
+            print(f"  {DIM}Warning: could not resolve route ({_exc}) — waypoints unavailable.{R}")
+    elif not navigraph:
         h("Flight plan file  (.lnmpln)")
         while True:
             raw = input("  Path: ").strip()
@@ -347,6 +364,7 @@ def _tui() -> RunConfig:
     return RunConfig(
         navigraph=navigraph,
         plan_path=plan_path,
+        route=route,
         aircraft_path=aircraft_path,
         wind=parse_wind(wind_str),
         wind_was_default=(wind_str == "0/0"),

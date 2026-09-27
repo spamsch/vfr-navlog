@@ -1,10 +1,11 @@
 # vfr-navlog
 
-A Python script that turns a VFR flight plan into a printable A4-landscape navlog PDF, German LBA-style. Built for simulator use with X-Plane 12 and VATSIM, but the output is real-world readable.
+A Python script that turns a VFR flight plan into a printable A4-landscape navlog PDF, German LBA-style. Built for simulator use with X-Plane 12 and VATSIM, but the output is real-world readable. Runs on macOS and Windows.
 
-Two plan sources are supported:
+Three plan sources are supported:
 
 - **[Navigraph Charts](https://navigraph.com/products/charts)** — the primary source. With `--navigraph`, the script reads the active plan directly out of Navigraph Charts' local storage on macOS. No export, no file — just plan and run.
+- **Route string** — pass `--route "EDDG DCT 520230N0074048E HMM DCT EDDK"`, e.g. the route copied out of Navigraph Charts. Airports and navaids resolve against X-Plane's nav data, DMS coordinates are used as-is. Works on any OS and needs no access to Navigraph's local storage — the way to use Navigraph plans on Windows.
 - **[Little Navmap](https://www.littlenavmap.org/) `.lnmpln`** — pass the file with `--plan`. You can also plan in Navigraph Charts and export (File → Export → Little Navmap) to get this format.
 
 ![Navlog — leg table with VOR cross-checks, live VATSIM frequencies, hemispheric altitudes, tower-call marker](docs/navlog-table.png)
@@ -45,6 +46,14 @@ source .venv/bin/activate
 pip install -e '.[dev]'
 ```
 
+On Windows (PowerShell):
+
+```
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+```
+
 `pip install -e '.'` pulls the runtime dependencies (`fpdf2`, `requests`, `img2pdf`) declared in `pyproject.toml`; the `[dev]` extra adds `pytest`, `pypdf`, and `ruff` for the test suite. If you prefer not to install the package, `pip install fpdf2 requests img2pdf Pillow` still covers the runtime.
 
 Installing the package puts a `vfr-navlog` console script on your `PATH`. Both entry points are equivalent:
@@ -56,7 +65,15 @@ python3 navlog.py --plan plan.lnmpln --aircraft aircraft_c172.json
 
 `navlog.py` is a thin shim over `vfr_navlog.cli:main`, kept so the old `python3 navlog.py …` invocation keeps working. The examples below use `python3 navlog.py`; swap in `vfr-navlog` freely.
 
-On macOS the tool registers `Arial.ttf` from `/System/Library/Fonts/Supplemental/` so umlauts render. On other platforms it falls back to core Helvetica.
+The tool registers Arial as a Unicode font so umlauts and arrows render — from `/System/Library/Fonts/Supplemental/` on macOS, `C:\Windows\Fonts\` on Windows. Elsewhere it falls back to core Helvetica.
+
+### Windows
+
+Everything except `--navigraph` works on Windows. Differences from macOS:
+
+- **Plan source:** use `--route` (paste the route from Navigraph Charts) or `--plan` with a Little Navmap export. `--navigraph` reads the macOS storage path only.
+- **X-Plane:** the default root is `C:\Program Files (x86)\Steam\steamapps\common\X-Plane 12`. Pass `--xplane` for any other install.
+- **No auto-open:** the finished PDF and the VATSIM prefile URL are printed but not opened automatically.
 
 ### Tests
 
@@ -89,6 +106,7 @@ Tab-completes file paths. Press Enter to accept [defaults].
 Plan source
   [1]  Little Navmap .lnmpln file
   [2]  Navigraph Charts  (reads live from the app, macOS only)
+  [3]  Paste a route string  (e.g. copied from Navigraph Charts)
   → [1]: 2
   Reading active Navigraph flight plan…[navigraph] EDDG to EDDK  (IFR)
   Loaded: EDDG → EDDK  (10 waypoints, cruise alt 38000 ft)
@@ -189,6 +207,7 @@ python3 navlog.py \
 |------|---------|-------|
 | `--plan` | — | Little Navmap `.lnmpln` file. Mutually exclusive with `--navigraph`. |
 | `--navigraph` | off | Read the active plan live from Navigraph Charts (macOS). |
+| `--route` | — | Route string, e.g. copied from Navigraph Charts (`EDDG DCT 520230N0074048E HMM DCT EDDK`). Airports and navaids resolve via X-Plane's nav data; DMS coordinates inline. Works on any OS. |
 | `--aircraft` | required | JSON profile (see `aircraft_c172.json`). |
 | `--registration` | from JSON | Override the aircraft registration for this run. |
 | `--wind` | `0/0` | Wind aloft `DDD/SS`, e.g. `270/15`. Applied uniformly to every leg. |
@@ -203,7 +222,7 @@ python3 navlog.py \
 | `--map-base` | `both` | Which base layers per waypoint page: `both` (chart + photo), `chart`, or `photo`. Only meaningful with `--wp-maps`. |
 | `--fms` | off | Write an X-Plane FMS v3 flight plan to `Output/FMS plans/`. |
 | `--call-tower-nm` | `10` | NM remaining threshold for the tower-call leg marker. `0` disables. |
-| `--xplane` | macOS Steam default | X-Plane 12 root. Pass `--xplane ""` to skip the destination-briefing page. |
+| `--xplane` | Steam default (macOS / Windows) | X-Plane 12 root. Pass `--xplane ""` to skip the destination-briefing page. |
 | `--fpl-eobt` | — | Generate an ICAO FPL with this EOBT (HHMM UTC). Triggers FPL output. |
 | `--fpl-pob` | `2` | Persons on board. |
 | `--fpl-equipment` | `SDFG/C` | ICAO field 10 equipment/surveillance code. |
@@ -262,7 +281,7 @@ Key points:
 - Altitude is ICAO `Axxx` format (hundreds of feet) — `A025` for 2500 ft. `VFR` as a level token is not accepted by the parser.
 - Coordinate waypoints (e.g. `521430N0075330E` from user-defined points) are stripped from the route; only named fixes are kept.
 - Aircraft type uses the `icao_type` field from the aircraft JSON when present (e.g. `C172`, not `C172S` which is the model name, not the Doc 8643 designator).
-- On macOS, the script builds the pre-fill URL and opens `my.vatsim.net/pilots/flightplan/beta?raw=…` directly in your browser. The form arrives ready to file.
+- The script builds the pre-fill URL `my.vatsim.net/pilots/flightplan/beta?raw=…` and prints it; on macOS it also opens it directly in your browser. The form arrives ready to file.
 - The `.fpl` file is also saved next to the PDF.
 
 ## Aircraft profile

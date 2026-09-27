@@ -126,6 +126,28 @@ def _navigraph_plan(data: dict, xplane_path: Path | None) -> Plan:
     )
 
 
+# ICAO FPL item-15 speed/level group, e.g. N0110A035 or K0200F045 — not a waypoint.
+_SPEED_LEVEL_RE = re.compile(r'^[NKM]\d{3,4}[AFSM]\d{3,4}$')
+
+
+def plan_from_route(route: str, xplane_path: Path | None,
+                    cruise_alt_ft: float | None = None, rules: str = "VFR") -> Plan:
+    """Build a Plan from a pasted route string (e.g. copied from Navigraph Charts).
+
+    Accepts 'EDDG DCT 520230N0074048E HMM DCT EDDK'. Airports and navaids are
+    resolved against X-Plane's apt.dat / earth_nav.dat, DMS coordinates inline.
+    """
+    tokens = [t for t in route.upper().split() if not _SPEED_LEVEL_RE.match(t)]
+    if xplane_path is None and any(_decode_dms(t) is None for t in tokens):
+        sys.exit("--route needs the X-Plane nav data (--xplane) to resolve airport and navaid idents.")
+    data = {"routestring": " ".join(tokens), "cruisingAltitude": cruise_alt_ft, "rules": rules}
+    plan = _navigraph_plan(data, xplane_path)
+    plan.cycle = "Route"
+    print(f"[route] {plan.waypoints[0].ident} to {plan.waypoints[-1].ident}  "
+          f"({len(plan.waypoints)} waypoints)")
+    return plan
+
+
 def read_navigraph_flight(xplane_path: Path | None) -> Plan:
     """Read the active flight plan from Navigraph Charts' Electron localStorage."""
     import shutil

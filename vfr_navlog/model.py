@@ -208,7 +208,7 @@ class RunConfig:
     cli.run() consumes it. Replaces the forged argparse.Namespace.
     """
     navigraph: bool
-    plan_path: Path | None            # None → Navigraph source
+    plan_path: Path | None            # None → Navigraph or route source
     aircraft_path: Path
     wind: tuple[float, float]         # parsed (direction_deg, speed_kt)
     wind_was_default: bool            # wind arg was the "0/0" default → allow METAR substitution
@@ -229,3 +229,4 @@ class RunConfig:
     map_radius_nm: float = 3.0  # excerpt radius, only meaningful with wp_maps
     map_base: str = "both"   # "both" | "chart" | "photo"; only meaningful with wp_maps
     chart_source: str = "ofm"  # "ofm" | "dfs" (official ICAO 500k, personal use only)
+    route: str | None = None   # pasted route string, e.g. copied from Navigraph Charts

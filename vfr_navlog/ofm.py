@@ -252,7 +252,8 @@ def map_excerpt(lat: float, lon: float, radius_nm: float, cycle: str,
 
 def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     for path in ("/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-                 "/System/Library/Fonts/Arial Bold.ttf"):
+                 "/System/Library/Fonts/Arial Bold.ttf",
+                 "C:/Windows/Fonts/arialbd.ttf"):
         if Path(path).exists():
             try:
                 return ImageFont.truetype(path, size)

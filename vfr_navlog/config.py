@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -18,8 +19,11 @@ VATSIM_UA = "navlog.py/1.0 (+local VFR planning script)"
 # in the airspace you're operating in.
 UNICOM_FREQ = "122.800"
 
-# Default macOS Steam install. Override via --xplane.
-DEFAULT_XPLANE = Path.home() / "Library/Application Support/Steam/steamapps/common/X-Plane 12"
+# Default Steam install (macOS / Windows). Override via --xplane.
+if sys.platform == "win32":
+    DEFAULT_XPLANE = Path("C:/Program Files (x86)/Steam/steamapps/common/X-Plane 12")
+else:
+    DEFAULT_XPLANE = Path.home() / "Library/Application Support/Steam/steamapps/common/X-Plane 12"
 NAV_REL = "Custom Data/earth_nav.dat"
 NAV_FALLBACK_REL = "Resources/default data/earth_nav.dat"
 FIX_REL = "Resources/default data/earth_fix.dat"
