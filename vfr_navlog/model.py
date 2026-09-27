@@ -42,6 +42,7 @@ class Waypoint:
     freq: str | None = None
     vor_info: str | None = None  # free-text VOR/navaid reference, e.g. "233 FROM"
     fixes: list[RadialFix] = field(default_factory=list)  # 0–2 computed cross-checks
+    notes: str = ""  # pilot notes for the leg into this waypoint (Notizen column)
 
 
 @dataclass
@@ -234,3 +235,5 @@ class RunConfig:
     route: str | None = None   # pasted route string, e.g. copied from Navigraph Charts
     table_style: str = "notes"
     phraseology: bool = False
+    waypoint_notes: list[str] = field(default_factory=list)  # per waypoint, in route order
+    hemispheric: bool = True  # raise leg altitudes to the VFR semicircular rule

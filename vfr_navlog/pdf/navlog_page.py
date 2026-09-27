@@ -306,6 +306,28 @@ ROW_HEIGHTS = {"classic": 6.5, "notes": 8.0}
 # Columns the pilot actively scans in cruise; printed larger + bold.
 _HIGHLIGHT = {"tc", "mh", "dist", "ete", "gs"}
 
+# Notes cell text: font size, line pitch (mm), and the most lines a row grows to.
+_NOTE_PT = 7
+_NOTE_LINE_H = 3.3
+_NOTE_MAX_LINES = 6
+
+
+def _wrap(pdf, text: str, width: float) -> list[str]:
+    """Word-wrap *text* to *width* mm in the current font; keeps explicit line breaks."""
+    lines: list[str] = []
+    for para in (text or "").splitlines():
+        line = ""
+        for word in para.split():
+            candidate = f"{line} {word}" if line else word
+            if line and pdf.get_string_width(candidate) > width:
+                lines.append(line)
+                line = word
+            else:
+                line = candidate
+        if line:
+            lines.append(line)
+    return lines
+
 
 def _ils_lines(dest_info) -> list[str]:
     """Destination ILS/LOC frequencies, e.g. ['ILS 14L IKOE 110.90', ...], by runway."""
@@ -329,7 +351,11 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
 
     # The tower-call annotation goes into the last column (ETO / ATO or Notizen).
     call_key = columns[-1][0]
-    ils_lines = _ils_lines(dest_info) if style == "notes" else []
+    has_notes = any(key == "notes" for key, _, _, _ in columns)
+    notes_w = next((w for key, _, w, _ in columns if key == "notes"), 0.0)
+    ils_lines = _ils_lines(dest_info) if has_notes else []
+    # Destination ILS frequencies, two per line.
+    ils_pairs = ["   ·   ".join(ils_lines[k:k + 2]) for k in range(0, len(ils_lines), 2)]
 
     header_h = 8
     row_h = ROW_HEIGHTS[style]
@@ -353,7 +379,28 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
     cum_ete = 0.0
     cum_fuel = 0.0
     for i in range(n_rows):
-        if current_y + row_h > usable_bottom:
+        # If this row is the tower-call marker, inject the call annotation into
+        # the last column.
+        is_call_row = (call_leg_idx is not None and i == call_leg_idx and i < len(plan.waypoints) - 1)
+        is_dest_row = (i == len(plan.waypoints) - 1)
+
+        # Notes cell content: call marker, destination ILS, then the pilot's notes.
+        # The row grows to fit them (capped), so notes never get cut to one line.
+        note_lines: list[tuple[str, str]] = []  # (text, kind: "call" | "ils" | "note")
+        if has_notes and i < len(plan.waypoints):
+            if is_call_row:
+                note_lines.append((call_text, "call"))
+            if is_dest_row:
+                note_lines += [(p, "ils") for p in ils_pairs]
+            pdf.set_font(font, "", _NOTE_PT)
+            for text in _wrap(pdf, plan.waypoints[i].notes, notes_w - 2.0):
+                note_lines.append((text, "note"))
+            if len(note_lines) > _NOTE_MAX_LINES:
+                note_lines = note_lines[:_NOTE_MAX_LINES]
+                note_lines[-1] = (note_lines[-1][0].rstrip() + " …", note_lines[-1][1])
+        this_h = max(row_h, len(note_lines) * _NOTE_LINE_H + 1.2)
+
+        if current_y + this_h > usable_bottom:
             if i >= len(plan.waypoints):
                 break  # trailing empty rows: don't overflow to a new page
             # Draw footer on the current page, then continue on a fresh one.
@@ -410,47 +457,41 @@ def _draw_nav_table(pdf, font, pw, plan, legs, wind, magvar, perf,
         else:
             row_fixes = []
 
-        # If this row is the tower-call marker, inject the call annotation into
-        # the last column.
-        is_call_row = (call_leg_idx is not None and i == call_leg_idx and i < len(plan.waypoints) - 1)
-        is_dest_row = (i == len(plan.waypoints) - 1)
-
         cx = pdf.l_margin
         for key, _name, w, align in columns:
             val = values.get(key, "")
             pdf.set_xy(cx, ry)
-            if is_call_row and key == call_key:
+            if key == "notes" and note_lines:
+                pdf.cell(w, this_h, "", border=1, fill=True)
+                for li, (text, kind) in enumerate(note_lines):
+                    pdf.set_font(font, "" if kind == "note" else "B", _NOTE_PT)
+                    if kind == "call":
+                        pdf.set_text_color(180, 0, 0)
+                    pdf.set_xy(cx + 0.5, ry + 0.6 + li * _NOTE_LINE_H)
+                    pdf.cell(w - 1.0, _NOTE_LINE_H, text, border=0, align="L")
+                    pdf.set_text_color(0, 0, 0)
+            elif is_call_row and key == call_key:
                 pdf.set_font(font, "B", 9)
                 pdf.set_text_color(180, 0, 0)
-                pdf.cell(w, row_h, " " + call_text, border=1, align="L", fill=True)
+                pdf.cell(w, this_h, " " + call_text, border=1, align="L", fill=True)
                 pdf.set_text_color(0, 0, 0)
             elif key == "vor" and row_fixes:
                 # Up to two fixes stacked in the cell at 6.5 pt.
-                pdf.cell(w, row_h, "", border=1, fill=True)
+                pdf.cell(w, this_h, "", border=1, fill=True)
                 pdf.set_font(font, "", 6.5)
                 line_h = row_h / 2
                 for li, fx in enumerate(row_fixes[:2]):
                     pdf.set_xy(cx + 0.5, ry + li * line_h + 0.3)
                     pdf.cell(w - 1.0, line_h, _fix_line(fx), border=0, align="L")
-            elif key == "notes" and is_dest_row and ils_lines:
-                # Destination ILS frequencies, two per line; the rest of the
-                # notes cell stays free for writing.
-                pdf.cell(w, row_h, "", border=1, fill=True)
-                pdf.set_font(font, "B", 7)
-                line_h = row_h / 2
-                pairs = ["   ·   ".join(ils_lines[k:k + 2]) for k in range(0, len(ils_lines), 2)]
-                for li, text in enumerate(pairs[:2]):
-                    pdf.set_xy(cx + 0.5, ry + li * line_h + 0.3)
-                    pdf.cell(w - 1.0, line_h, text, border=0, align="L")
             elif key in _HIGHLIGHT:
                 pdf.set_font(font, "B", 10)
-                pdf.cell(w, row_h, " " + str(val) if val else "", border=1, align=align, fill=True)
+                pdf.cell(w, this_h, " " + str(val) if val else "", border=1, align=align, fill=True)
             else:
                 pdf.set_font(font, "", 8)
-                pdf.cell(w, row_h, " " + str(val) if val else "", border=1, align=align, fill=True)
+                pdf.cell(w, this_h, " " + str(val) if val else "", border=1, align=align, fill=True)
             cx += w
 
-        current_y += row_h
+        current_y += this_h
 
     return cum_dist, cum_ete, cum_fuel, current_y
 

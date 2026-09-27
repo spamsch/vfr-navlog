@@ -160,7 +160,7 @@ def main():
     run(config)
 
 
-def run(config: RunConfig) -> None:
+def run(config: RunConfig) -> Path:
     xplane_path = config.xplane_path
 
     if config.navigraph:
@@ -188,6 +188,8 @@ def run(config: RunConfig) -> None:
     if config.cruise_alt_ft is not None:
         plan.cruise_alt_ft = config.cruise_alt_ft
     plan.alt_profile = config.alt_profile
+    for wp, text in zip(plan.waypoints, config.waypoint_notes):
+        wp.notes = text
     wind = config.wind
     magvar = config.magvar
 
@@ -277,7 +279,8 @@ def run(config: RunConfig) -> None:
     tas = aircraft["performance"]["tas_cruise"]
     burn = aircraft["performance"]["fuel_burn_cruise_lph"]
     legs = compute_legs(plan, tas, wind, magvar, burn)
-    apply_hemispheric_rule(plan, legs)
+    if config.hemispheric:
+        apply_hemispheric_rule(plan, legs)
 
     dep_info: AirportInfo | None = None
     dest_info: AirportInfo | None = None
@@ -364,6 +367,8 @@ def run(config: RunConfig) -> None:
     elif sys.platform == "win32":
         # start opens the default PDF viewer; the empty "" is start's window-title argument.
         subprocess.run(["cmd", "/c", "start", "", str(out)], check=False)
+
+    return out
 
 
 if __name__ == "__main__":

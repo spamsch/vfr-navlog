@@ -41,7 +41,8 @@ ETE
 min
 ETO / ATO Notizen
  EDDV  Hannover  183
- NIE  Nienburg  4500  303  296  20.5  84  15  → EDLI TWR rufen
+ NIE  Nienburg  4500  303  296  20.5  84  15
+→ EDLI TWR rufen
  EDLI  Bielefeld  433  211  213  47.7  87  33
 TEST SNAPSHOT
 === PAGE ===
