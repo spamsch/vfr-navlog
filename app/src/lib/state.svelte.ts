@@ -90,6 +90,8 @@ class AppState {
   field = $state<FieldLive | null>(null);
   fieldBusy = $state(false);
   fieldError = $state<string | null>(null);
+  /** After the first "Send to X-Plane", plan edits are re-sent automatically. */
+  xpSync = $state(false);
 
   dirty = $derived(JSON.stringify(this.doc) !== this.savedJson);
 
@@ -426,6 +428,93 @@ class AppState {
     this.selectedLandmark = null;
     this.pinMode = false;
     this.fitRoute++;
+  }
+
+  // --- X-Plane kneeboard (FlyWithLua window) ------------------------------------
+
+  /** Everything the in-sim kneeboard shows, precomputed (the Lua side only draws). */
+  kneeboardData(): Record<string, unknown> | null {
+    const r = this.doc.resolved;
+    if (!r) return null;
+    const wps = r.waypoints;
+    const dest = wps[wps.length - 1];
+    const live = this.field && this.field.icao === dest.ident.toUpperCase() ? this.field : null;
+    const roles: [string, string][] = [["atis", "ATIS"], ["delivery", "Delivery"], ["ground", "Ground"], ["tower", "Tower"], ["approach", "Approach"]];
+    const freqs = roles
+      .map(([role, label]) => ({ label, freq: live?.freqs[role] ?? r.dest_freqs[role] ?? "", live: !!live?.freqs[role] }))
+      .filter((f) => f.freq);
+    if (live?.radar) freqs.push({ label: live.radar.name, freq: live.radar.freq, live: true });
+
+    return {
+      sent_at: Date.now(),
+      route_key: wps.map((w) => w.ident).join(" "),
+      title: `${wps[0].ident} -> ${dest.ident} (${r.aircraft.type})`,
+      call_leg: r.call_leg_idx != null ? r.call_leg_idx + 1 : null,
+      waypoints: wps.map((w, i) => ({ ident: w.ident, lat: w.lat, lon: w.lon, notes: this.doc.notes[i] ?? "", fixes: w.fixes })),
+      legs: r.legs.map((l, k) => {
+        const nav = this.legNav(k);
+        return {
+          from: l.from,
+          to: l.to,
+          from_idx: k + 1,
+          mh: l.mh,
+          alt: this.legAlt(k),
+          gs: l.gs_kt,
+          dist: l.distance_nm,
+          ete_min: l.ete_min,
+          nav: nav
+            ? {
+                ident: nav.c.vor.ident,
+                freq: nav.c.vor.freq,
+                freq_10khz: Math.round(parseFloat(nav.c.vor.freq) * 100),
+                obs: nav.c.obs,
+                flag: nav.c.flag,
+                trackable: nav.c.trackable,
+                radial_label: nav.c.radialLabel,
+                max_dev: nav.c.maxDev,
+                r_start: nav.c.rStart,
+                r_end: nav.c.rEnd,
+                lat: nav.c.vor.lat,
+                lon: nav.c.vor.lon,
+                var: nav.c.vor.var,
+                dme: nav.c.vor.dme,
+                suggested: !nav.chosen,
+              }
+            : null,
+          checkpoints: this.landmarksForLeg(k).map((lm) => ({ label: landmarkLine(lm, r), min: (lm.along / l.gs_kt) * 60 })),
+        };
+      }),
+      dest: {
+        ident: dest.ident,
+        name: r.dest_info?.name ?? "",
+        elev: r.dest_info?.elevation_ft ?? null,
+        freqs,
+        ils: r.dest_ils.map((i) => `ILS ${i.runway} ${i.ident} ${i.freq_mhz.toFixed(2)}`),
+        runways: r.dest_info?.runways ?? [],
+        atis: live?.atis ?? [],
+        metar: live?.metar ?? null,
+        as_of: live?.fetched_at ?? null,
+      },
+    };
+  }
+
+  async sendToXPlane(auto = false) {
+    if (!this.doc.resolved) return;
+    if (!auto && !this.field) await this.fetchField(); // include live frequencies/ATIS when reachable
+    const plan = this.kneeboardData();
+    try {
+      const res = await navlog<{ plan_path: string; script_installed: boolean; flywithlua: boolean }>({ cmd: "kneeboard", plan });
+      this.xpSync = true;
+      if (!res.flywithlua) {
+        this.error = "FlyWithLua not found in X-Plane — the kneeboard window needs it (Resources/plugins/FlyWithLua).";
+      } else if (res.script_installed) {
+        this.status = "Kneeboard script installed — in X-Plane: Plugins › FlyWithLua › Reload all Lua script files (once).";
+      } else if (!auto) {
+        this.status = "Sent to X-Plane — edits now sync automatically.";
+      }
+    } catch (e) {
+      this.error = `Send to X-Plane: ${e}`;
+    }
   }
 
   /** Live frequencies, ATIS and weather for the destination (fails soft: keeps the last good data). */

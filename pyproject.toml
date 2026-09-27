@@ -19,6 +19,7 @@ dev = [
     "pytest",
     "pypdf",
     "ruff",
+    "lupa",  # runs xplane/vfr_kneeboard.lua under LuaJIT in the tests
 ]
 
 [project.scripts]

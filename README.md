@@ -38,7 +38,7 @@ Destination and weather briefing:
 
 ## Desktop app
 
-`app/` holds a Tauri desktop planner and in-flight kneeboard built on this package: paste a route, annotate waypoints and landmarks on the chart, see which legs can be flown on a VOR radial, edit leg altitudes, then fly it with a leg timer, dead-reckoning position, revised ETAs and live destination frequencies/ATIS/ILS. It exports this navlog with your notes. See [app/README.md](app/README.md).
+`app/` holds a Tauri desktop planner and in-flight kneeboard built on this package: paste a route, annotate waypoints and landmarks on the chart, see which legs can be flown on a VOR radial, edit leg altitudes, then fly it with a leg timer, dead-reckoning position, revised ETAs and live destination frequencies/ATIS/ILS. It exports this navlog with your notes, and sends the plan to an in-sim kneeboard window in X-Plane (FlyWithLua, `xplane/vfr_kneeboard.lua`) with one-click NAV radio tuning. See [app/README.md](app/README.md).
 
 ## Install
 

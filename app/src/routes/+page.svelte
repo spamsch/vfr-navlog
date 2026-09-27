@@ -19,6 +19,15 @@
     app.autosave();
   });
 
+  // Once sent, keep the X-Plane kneeboard in step with plan edits and fresh destination data.
+  $effect(() => {
+    if (!app.xpSync) return;
+    JSON.stringify(app.doc);
+    app.field;
+    const t = setTimeout(() => app.sendToXPlane(true), 2000);
+    return () => clearTimeout(t);
+  });
+
   // Clear the status line after a few seconds.
   $effect(() => {
     if (!app.status) return;
@@ -82,6 +91,13 @@
       <button class:on={app.mode === "fly"} onclick={() => (app.mode = "fly")}>Fly</button>
     </div>
     <div class="group">
+      <button
+        onclick={() => app.sendToXPlane()}
+        disabled={!app.doc.resolved}
+        title="Show this plan in the X-Plane kneeboard window (FlyWithLua)"
+      >
+        {app.xpSync ? "● X-Plane synced" : "Send to X-Plane"}
+      </button>
       <button onclick={() => app.cacheTiles()} disabled={!app.doc.resolved || !!app.busy} title="Download charts along the route for offline use">Cache charts</button>
       <button class="primary" onclick={() => app.exportPdf()} disabled={!app.doc.resolved || !!app.busy}>Export PDF</button>
     </div>

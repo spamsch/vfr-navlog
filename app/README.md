@@ -35,6 +35,12 @@ npm run tauri dev
 - 1-in-60 helper: off-track distance → heading back to the waypoint or to parallel.
 - Destination: live VATSIM frequencies and ATIS, published frequencies, ILS per runway, runways, METAR with QNH — opens by itself on the tower-call leg and refreshes every 3 minutes.
 
+**X-Plane kneeboard** (in-sim window, FlyWithLua NG+)
+- *Send to X-Plane* writes the plan to `<X-Plane>/Output/vfr-navlog/kneeboard_plan.lua` and installs `xplane/vfr_kneeboard.lua` into FlyWithLua's Scripts folder (reload Lua scripts once after the first install). After the first send, plan edits re-send automatically.
+- Bind `FlyWithLua/vfr_kneeboard/toggle` to a key or joystick button; `FlyWithLua/vfr_kneeboard/over_waypoint` logs "over the next waypoint now". Also under Plugins › FlyWithLua › Macros, together with *reset window position*.
+- Shows the current leg with a timer on sim time (pauses with the sim), times over waypoints with revised ETAs, checkpoints, notes, climb/descend warnings, the leg's VOR with **Tune NAV1/NAV2** (sets frequency and OBS) and the radial/DME expected now, and the destination frequencies/ILS/ATIS as of the last send.
+- Text is ASCII only (FlyWithLua's font has no umlauts); the in-sim flight log is separate from the app's Fly view.
+
 Plans save as `.vfrplan.json` (Ctrl+S / Ctrl+O), including the flight log; the working plan is also autosaved locally.
 
 Charts: © openflightmaps (OFMA General Users' License), cached under `~/.cache/vfr-navlog/ofm`, shared with the PDF renderer.

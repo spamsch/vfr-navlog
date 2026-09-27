@@ -223,7 +223,16 @@ def cmd_field(req: dict) -> dict:
     }
 
 
-COMMANDS = {"aircraft": cmd_aircraft, "resolve": cmd_resolve, "pdf": cmd_pdf, "field": cmd_field}
+def cmd_kneeboard(req: dict) -> dict:
+    """Send the app's kneeboard data to the in-sim FlyWithLua window."""
+    from .kneeboard import send
+
+    root = Path(req["xplane"]) if req.get("xplane") else DEFAULT_XPLANE
+    return send(req["plan"], root)
+
+
+COMMANDS = {"aircraft": cmd_aircraft, "resolve": cmd_resolve, "pdf": cmd_pdf, "field": cmd_field,
+            "kneeboard": cmd_kneeboard}
 
 
 def handle(req: dict) -> dict:
