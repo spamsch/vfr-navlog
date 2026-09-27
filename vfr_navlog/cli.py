@@ -353,6 +353,9 @@ def run(config: RunConfig) -> None:
 
     if sys.platform == "darwin":
         subprocess.run(["open", str(out)], check=False)
+    elif sys.platform == "win32":
+        # start opens the default PDF viewer; the empty "" is start's window-title argument.
+        subprocess.run(["cmd", "/c", "start", "", str(out)], check=False)
 
 
 if __name__ == "__main__":

@@ -73,7 +73,7 @@ Everything except `--navigraph` works on Windows. Differences from macOS:
 
 - **Plan source:** use `--route` (paste the route from Navigraph Charts) or `--plan` with a Little Navmap export. `--navigraph` reads the macOS storage path only.
 - **X-Plane:** the default root is `C:\Program Files (x86)\Steam\steamapps\common\X-Plane 12`. Pass `--xplane` for any other install.
-- **No auto-open:** the finished PDF and the VATSIM prefile URL are printed but not opened automatically.
+- **Auto-open:** the finished PDF opens in your default PDF viewer. The VATSIM prefile URL is printed but not opened automatically.
 
 ### Tests
 
