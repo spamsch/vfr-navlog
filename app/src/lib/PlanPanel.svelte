@@ -9,8 +9,8 @@
   const pad3 = (n: number) => String(n).padStart(3, "0");
 
   const AUTO = "__auto";
-  function onNavPick(k: number, value: string) {
-    app.setLegVor(k, value === AUTO ? null : value);
+  function onNavPick(k: number, value: string, slot: 1 | 2) {
+    app.setLegVor(k, value === AUTO ? null : value, slot);
   }
   function onAlt(k: number, value: string) {
     const v = Number(value);
@@ -59,7 +59,18 @@
       </select>
     </label>
     <label class="short">Cruise ft <input bind:value={app.doc.cruiseAlt} placeholder="3500" inputmode="numeric" /></label>
-    <label class="short">Wind <input bind:value={app.doc.wind} placeholder="270/15" /></label>
+    <label class="short">
+      Wind
+      <span class="withbtn">
+        <input bind:value={app.doc.wind} placeholder="270/15" />
+        <button
+          class="small"
+          onclick={() => app.loadLiveWind()}
+          disabled={!!app.busy || !app.doc.route.trim()}
+          title="Load the current real-world wind at cruise altitude along the route (Open-Meteo forecast, true direction)"
+        >Live</button>
+      </span>
+    </label>
     <label class="short">Var <input bind:value={app.doc.magvar} placeholder="4E" /></label>
   </div>
   <div class="row actions">
@@ -162,7 +173,6 @@
         {#if leg}
           {@const k = i - 1}
           {@const advice = app.altAdvice(k)}
-          {@const nav = app.legNav(k)}
           <div class="legrow">
             <label class="alt">
               Alt
@@ -183,21 +193,31 @@
                 ⚠ rule: {advice}
               </button>
             {/if}
-            <select class="nav" value={app.doc.legVor[k] ?? AUTO} onchange={(e) => onNavPick(k, e.currentTarget.value)}>
-              <option value={AUTO}>VOR: auto (best radial)</option>
-              <option value="">VOR: none</option>
-              {#each app.legCandidates[k] ?? [] as c (c.vor.ident + c.vor.freq)}
-                <option value={c.vor.ident}>
-                  {c.vor.ident} {c.vor.freq} · {c.trackable ? `OBS ${pad3(c.obs)} ${c.flag} ≤${Math.max(1, Math.round(c.maxDev))}°` : `${formatRadial(c.rStart)}→${formatRadial(c.rEnd)}`}
-                </option>
-              {/each}
-            </select>
           </div>
-          {#if nav}
-            <div class="navline" class:trackable={nav.c.trackable}>
-              {navLine(nav.c)}{nav.chosen ? "" : "  (suggested)"}
+          {#each [1, 2] as const as slot (slot)}
+            {@const nav = app.legNav(k, slot)}
+            <div class="navrow">
+              <span class="navlbl">NAV{slot}</span>
+              <select
+                class="nav"
+                value={(slot === 1 ? app.doc.legVor : app.doc.legVor2)[k] ?? AUTO}
+                onchange={(e) => onNavPick(k, e.currentTarget.value, slot)}
+              >
+                <option value={AUTO}>auto ({slot === 1 ? "best radial" : "nearest other station"})</option>
+                <option value="">none</option>
+                {#each app.legCandidates[k] ?? [] as c (c.vor.ident + c.vor.freq)}
+                  <option value={c.vor.ident}>
+                    {c.vor.ident} {c.vor.freq} · {c.trackable ? `OBS ${pad3(c.obs)} ${c.flag} ≤${Math.max(1, Math.round(c.maxDev))}°` : `${formatRadial(c.rStart)}→${formatRadial(c.rEnd)}`}
+                  </option>
+                {/each}
+              </select>
+              {#if nav}
+                <span class="navline" class:trackable={nav.c.trackable}>
+                  {navLine(nav.c)}{nav.chosen ? "" : "  (suggested)"}
+                </span>
+              {/if}
             </div>
-          {/if}
+          {/each}
         {/if}
         {#if wp.fixes.length}
           <div class="fixes">{wp.fixes.join("   ·   ")}</div>
@@ -268,6 +288,10 @@
   }
   .short input {
     width: 70px;
+  }
+  .withbtn {
+    display: flex;
+    gap: 3px;
   }
   .actions {
     align-items: center;
@@ -455,8 +479,19 @@
     color: #b26a00;
     border-color: #e0a800;
   }
+  .navrow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .navlbl {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    min-width: 34px;
+  }
   .nav {
-    margin-left: auto;
     max-width: 230px;
     font-size: 12px;
   }

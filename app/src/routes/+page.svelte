@@ -130,6 +130,11 @@
             {app.pinMode ? "Click the map… (Esc)" : "＋ Landmark"}
           </button>
         {/if}
+        <div class="seg" title="Map background">
+          <button class:on={app.mapBase === "chart"} onclick={() => (app.mapBase = "chart")}>Chart</button>
+          <button class:on={app.mapBase === "satellite"} onclick={() => (app.mapBase = "satellite")}>Satellite</button>
+          <button class:on={app.mapBase === "none"} onclick={() => (app.mapBase = "none")}>None</button>
+        </div>
         <label><input type="checkbox" bind:checked={app.showTicks} /> Minute ticks</label>
         <label><input type="checkbox" bind:checked={app.showFans} /> ±10° lines</label>
       </div>

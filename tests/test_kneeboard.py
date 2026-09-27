@@ -13,7 +13,13 @@ def _plan(route_key: str = "A B C", sent_at: int = 1) -> dict:
     nav = {
         "ident": "HMM", "freq": "115.65", "freq_10khz": 11565, "obs": 172, "flag": "TO",
         "trackable": True, "radial_label": "inbound R352", "max_dev": 1.4, "r_start": 350, "r_end": 353,
-        "lat": 51.86, "lon": 7.71, "var": 1.0, "dme": True, "suggested": False,
+        "lat": 51.86, "lon": 7.71, "var": 1.0, "dme": True, "suggested": False, "crs": 172, "crs_flag": "TO",
+    }
+    # Not trackable: the course is the radial over the waypoint.
+    nav2 = {
+        "ident": "DOR", "freq": "116.40", "freq_10khz": 11640, "obs": 180, "flag": "TO",
+        "trackable": False, "radial_label": "inbound R000", "max_dev": 14.0, "r_start": 250, "r_end": 262,
+        "lat": 51.9, "lon": 7.3, "var": 1.0, "dme": False, "suggested": True, "crs": 262, "crs_flag": "FROM",
     }
     return {
         "sent_at": sent_at, "route_key": route_key, "title": "A -> C (SR22)", "call_leg": 2,
@@ -24,9 +30,9 @@ def _plan(route_key: str = "A B C", sent_at: int = 1) -> dict:
         ],
         "legs": [
             {"from": "A", "to": "B", "from_idx": 1, "mh": 180, "alt": 3500, "gs": 120, "dist": 6.0, "ete_min": 3.0,
-             "nav": nav, "checkpoints": [{"label": "Autobahn A1 (L 0.5 NM)", "min": 1.5}]},
+             "nav": nav, "nav2": nav2, "checkpoints": [{"label": "Autobahn A1 (L 0.5 NM)", "min": 1.5}]},
             {"from": "B", "to": "C", "from_idx": 2, "mh": 180, "alt": 4500, "gs": 120, "dist": 6.0, "ete_min": 3.0,
-             "checkpoints": []},
+             "nav2": nav2, "checkpoints": []},
         ],
         "dest": {"ident": "C", "name": "Ceeport", "elev": 300, "freqs": [{"label": "Tower", "freq": "124.980", "live": True}],
                  "ils": ["ILS 14L IKOE 110.90"], "runways": ["14L/32R"], "atis": [], "metar": "C 271450Z CAVOK Q1015",
@@ -51,6 +57,8 @@ class FakeSim:
     def __init__(self, root: Path):
         self.lua = lupa.LuaRuntime(unpack_returned_tuples=True)
         self.texts: list[str] = []
+        self.sized: list[tuple[str, float]] = []  # (text, font scale) in draw order
+        self.scale = 1.0
         self.images: list[tuple[float, float]] = []  # (w, h) of every imgui.Image call
         self.children = 0  # open BeginChild calls (must be back to 0 after a draw)
         self.mouse_down = False
@@ -97,11 +105,11 @@ class FakeSim:
             function float_wnd_load_image(path) loaded_images[#loaded_images + 1] = path; return #loaded_images end
         """)
         imgui = self.lua.table_from({
-            "TextUnformatted": lambda s: self.texts.append(s),
+            "TextUnformatted": lambda s: (self.texts.append(s), self.sized.append((s, self.scale))),
             "Button": lambda label, w=0, h=0: (self.buttons.append(label), label in self.click)[1],
             "SameLine": lambda *a: None, "Separator": lambda *a: None, "Spacing": lambda *a: None,
             "PushStyleColor": lambda *a: None, "PopStyleColor": lambda *a: None,
-            "SetWindowFontScale": lambda *a: None,
+            "SetWindowFontScale": lambda f: setattr(self, "scale", f),
             "Image": lambda img, w, h, *a: self.images.append((w, h)),
             "BeginChild": lambda *a: self._child(1), "EndChild": lambda *a: self._child(-1),
             "GetWindowWidth": lambda: 740.0, "GetWindowHeight": lambda: 800.0,
@@ -119,9 +127,14 @@ class FakeSim:
 
     def draw(self, click: tuple[str, ...] = ()) -> str:
         self.texts.clear()
+        self.sized.clear()
         self.buttons.clear()
         self.click = set(click)
         return self._build("vfrkb_build")
+
+    def size_of(self, text: str, nth: int = 0) -> float:
+        """Font scale of the nth drawn text equal to *text*."""
+        return [sc for t, sc in self.sized if t == text][nth]
 
     def _child(self, d: int):
         self.children += d
@@ -168,7 +181,18 @@ def test_script_flies_a_plan(tmp_path):
     sim = FakeSim(tmp_path)
     text = sim.draw()
     assert "Ready  A -> B" in text and "Start: over A now" in sim.buttons
-    assert "OBS 172 TO" in text
+    assert "MH\nALT\nGS\n180\n3500\n120" in text  # labels over values
+    assert "NAV1\n172\nTO" in text and "NAV2\n262\nFROM" in text
+    assert "HMM 115.65" in text
+    assert "NEXT  B -> C\nMH\nALT\nGS\n180\n4500\n120" in text
+    # Layout order: MH first, then this leg's radios, the next leg, then the rest.
+    assert text.index("MH") < text.index("NAV1") < text.index("NEXT  B") < text.index("Ready  A -> B")
+    assert "Tune NAV2##next" in sim.buttons
+    assert "NAV1  -" in text  # the next leg has no NAV1 station: shown empty, no tune button
+    # Sizes follow priority: MH/ALT/GS biggest, then this leg's courses, then the next leg's MH, then its courses.
+    mh, crs, next_mh, next_crs = sim.size_of("180"), sim.size_of("172"), sim.size_of("180", 1), sim.size_of("262", 1)
+    assert mh > crs > next_mh > next_crs >= 1.8
+    assert sim.size_of("HMM 115.65".rjust(15)) > 1.0  # the frequency stays readable
 
     sim.draw(click=("Start: over A now",))
     sim.set_time(160.0)  # 60 s into leg 1
@@ -179,15 +203,19 @@ def test_script_flies_a_plan(tmp_path):
     assert "Autobahn A1 (L 0.5 NM)   in 0:30" in text
     assert "Kirchturm rechts, Koeln -> Sued" in text  # notes, transliterated
     assert "expect now R" in text
+    assert text.index("NAV2") < text.index("NOTES  B") < text.index("NEXT  B")
 
-    sim.draw(click=("Tune NAV1",))
+    sim.draw(click=("Tune NAV1", "Tune NAV2"))
     g = sim.lua.globals()
     assert g.vfrkb_nav1_hz == 11565 and g.vfrkb_nav1_obs == 172
+    assert g.vfrkb_nav2_hz == 11640 and g.vfrkb_nav2_obs == 262
+    assert "ETA" not in text  # the ETA log is gone
 
     sim.draw(click=("Over B now",))  # leg 1 flown in 60 s instead of 180 s
     sim.set_time(170.0)
     text = sim.draw()
     assert "B -> C   (leg 2/2)" in text
+    assert "NEXT  " not in text  # last leg: nothing to set up next
     assert "ILS 14L IKOE 110.90" in text  # destination opens by itself on the call leg
 
     # Re-sending the same route (e.g. edited notes) keeps the flight log; a new route resets it.

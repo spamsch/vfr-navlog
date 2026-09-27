@@ -45,19 +45,33 @@
     };
   });
 
-  // Chart tiles: OFM serves 512 px tiles, so Leaflet zoom z shows OFM zoom z-1.
+  // Background: OFM chart (512 px tiles, so Leaflet zoom z shows OFM zoom z-1), satellite
+  // imagery (online only, not cached), or nothing so route, waypoints and radials stand out.
   $effect(() => {
     const cycle = app.doc.resolved?.ofm_cycle ?? airacCycle();
+    const base = app.mapBase;
     if (!map) return;
     for (const t of tiles) t.remove();
-    const attribution = `© <a href="https://www.openflightmaps.org">openflightmaps</a> · AIRAC ${cycle}`;
-    const opts = { tileSize: 512, zoomOffset: -1, minZoom: 6, maxZoom: 15 };
-    tiles = [
-      L.tileLayer(`${TILE_BASE}/${cycle}/base/{z}/{x}/{y}`, { ...opts, maxNativeZoom: 13, attribution }),
-      L.tileLayer(`${TILE_BASE}/${cycle}/aero/{z}/{x}/{y}`, { ...opts, maxNativeZoom: 12 }),
-    ];
+    if (base === "chart") {
+      const attribution = `© <a href="https://www.openflightmaps.org">openflightmaps</a> · AIRAC ${cycle}`;
+      const opts = { tileSize: 512, zoomOffset: -1, minZoom: 6, maxZoom: 15 };
+      tiles = [
+        L.tileLayer(`${TILE_BASE}/${cycle}/base/{z}/{x}/{y}`, { ...opts, maxNativeZoom: 13, attribution }),
+        L.tileLayer(`${TILE_BASE}/${cycle}/aero/{z}/{x}/{y}`, { ...opts, maxNativeZoom: 12 }),
+      ];
+    } else if (base === "satellite") {
+      tiles = [
+        L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+          minZoom: 6,
+          maxZoom: 17,
+          attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+        }),
+      ];
+    } else {
+      tiles = [];
+    }
     for (const t of tiles) t.addTo(map).bringToBack();
-    tiles[1].bringToFront();
+    tiles[1]?.bringToFront();
   });
 
   // Zoom to the whole route whenever a new route is resolved, a plan is opened, or on "reset to start".
@@ -203,7 +217,7 @@
     const selVor = r.vors.find((v) => v.ident === sel);
     if (selVor) {
       for (const w of r.waypoints) {
-        L.polyline([ll(selVor), ll(w)], { color: "#1565c0", weight: 1, dashArray: "4 6", opacity: 0.7, interactive: false }).addTo(vorLayer);
+        L.polyline([ll(selVor), ll(w)], { color: "#1565c0", weight: 1.5, dashArray: "4 6", opacity: 0.9, interactive: false }).addTo(vorLayer);
         const at = { lat: selVor.lat + (w.lat - selVor.lat) * 0.8, lon: selVor.lon + (w.lon - selVor.lon) * 0.8 };
         L.marker(ll(at), { icon: textIcon(formatRadial(radialAt(selVor, w)), "radial-label"), interactive: false }).addTo(vorLayer);
       }
@@ -240,13 +254,16 @@
   });
 </script>
 
-<div class="map" class:pin-mode={app.pinMode} bind:this={el}></div>
+<div class="map" class:pin-mode={app.pinMode} class:plain={app.mapBase === "none"} bind:this={el}></div>
 
 <style>
   .map {
     width: 100%;
     height: 100%;
     background: #dfe6e9;
+  }
+  .map.plain {
+    background: #fafbfc;
   }
   .pin-mode :global(.leaflet-container),
   .map.pin-mode {

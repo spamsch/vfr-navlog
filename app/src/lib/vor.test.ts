@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { destination } from "./geo";
-import { analyseLeg, candidatesForLeg, gcBearing, radialAt, type Vor } from "./vor";
+import { analyseLeg, candidatesForLeg, gcBearing, navCourse, radialAt, type Vor } from "./vor";
 
 const vor = (lat: number, lon: number, extra: Partial<Vor> = {}): Vor => ({
   ident: "TST", name: "Test", freq: "115.00", lat, lon, var: 0, dme: true, range_nm: 80, route_dist_nm: 0, ...extra,
@@ -86,5 +86,15 @@ describe("gcBearing", () => {
   it("matches cardinal directions", () => {
     expect(gcBearing(A, B)).toBeCloseTo(0, 5);
     expect(gcBearing(B, A)).toBeCloseTo(180, 5);
+  });
+});
+
+describe("navCourse", () => {
+  it("is the leg course on a trackable station, else the radial over the waypoint (FROM)", () => {
+    const behind = analyseLeg(vor(A.lat - 10 / 60, 7.0, { var: 2 }), A, B);
+    expect(navCourse(behind)).toEqual({ crs: 358, flag: "FROM" });
+    const abeam = analyseLeg(vor(51.1, 7.5), A, B);
+    expect(abeam.trackable).toBe(false);
+    expect(navCourse(abeam)).toEqual({ crs: abeam.rEnd, flag: "FROM" });
   });
 });

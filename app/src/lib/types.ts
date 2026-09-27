@@ -113,7 +113,8 @@ export interface PlanDoc {
   resolved: Resolved | null;
   ato: (number | null)[]; // actual time over each waypoint (epoch ms), set in flight
   legAlts: (number | null)[]; // per-leg altitude override; null = cruise altitude
-  legVor: (string | null)[]; // per-leg VOR ident; null = suggest the best, "" = none
+  legVor: (string | null)[]; // per-leg NAV1 VOR ident; null = suggest the best, "" = none
+  legVor2: (string | null)[]; // per-leg NAV2 VOR ident; null = suggest a second station, "" = none
   hemispheric: boolean; // raise un-edited legs to the semicircular rule automatically
   pdf: PdfOptions;
 }

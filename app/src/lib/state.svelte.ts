@@ -3,7 +3,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 
 import { distanceNm, perpendicular, pointAlong, project, tileXY, type LatLon } from "./geo";
 import type { AircraftInfo, AirportCharts, FieldLive, Landmark, PlanDoc, Resolved } from "./types";
-import { analyseLeg, candidatesForLeg, navLine, type LegRadial } from "./vor";
+import { analyseLeg, candidatesForLeg, navCourse, navLine, type LegRadial } from "./vor";
 
 const AUTOSAVE_KEY = "vfr-navlog-autosave";
 
@@ -27,6 +27,7 @@ export function emptyDoc(): PlanDoc {
     ato: [],
     legAlts: [],
     legVor: [],
+    legVor2: [],
     hemispheric: false,
     pdf: { vatsim: true, phraseology: false, wpMaps: false },
   };
@@ -86,6 +87,8 @@ class AppState {
   pinMode = $state(false);
   showFans = $state(true);
   showTicks = $state(true);
+  /** Map background: openflightmaps chart, satellite imagery, or none. */
+  mapBase = $state<"chart" | "satellite" | "none">("chart");
   aircraftList = $state<AircraftInfo[]>([]);
   now = $state(Date.now());
   /** Bumped to make the map zoom back to the whole route. */
@@ -194,15 +197,19 @@ class AppState {
         const old = d.resolved;
         const alts = new Map<string, number | null>();
         const vors = new Map<string, string | null>();
+        const vors2 = new Map<string, string | null>();
         old.legs.forEach((_, k) => {
           alts.set(legKey(old, k), d.legAlts[k] ?? null);
           vors.set(legKey(old, k), d.legVor[k] ?? null);
+          vors2.set(legKey(old, k), d.legVor2[k] ?? null);
         });
         d.legAlts = r.legs.map((_, k) => alts.get(legKey(r, k)) ?? null);
         d.legVor = r.legs.map((_, k) => vors.get(legKey(r, k)) ?? null);
+        d.legVor2 = r.legs.map((_, k) => vors2.get(legKey(r, k)) ?? null);
       } else {
         d.legAlts = r.legs.map(() => null);
         d.legVor = r.legs.map(() => null);
+        d.legVor2 = r.legs.map(() => null);
       }
       // Keep notes with their waypoint when the route is edited: match by ident, in order.
       const oldIdents = d.resolved?.waypoints.map((w) => w.ident) ?? [];
@@ -221,6 +228,31 @@ class AppState {
       for (const icao of this.chartIcaos()) void this.fetchCharts(icao);
     } catch (e) {
       this.error = String(e);
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  /** Current real-world wind at cruise altitude along the route (Open-Meteo), then re-resolve. */
+  async loadLiveWind() {
+    if (!this.doc.resolved) await this.resolve();
+    const r = this.doc.resolved;
+    if (!r) return;
+    this.busy = "Fetching wind…";
+    this.error = null;
+    try {
+      const alt = this.cruiseAltFt();
+      const w = await navlog<{ wind: string; valid: string; points: number }>({
+        cmd: "wind",
+        points: r.waypoints.map((p) => [p.lat, p.lon]),
+        alt_ft: alt,
+      });
+      this.doc.wind = w.wind;
+      this.busy = null;
+      await this.resolve();
+      this.status = `Wind ${w.wind} at ${alt} ft · Open-Meteo forecast ${w.valid}, average of ${w.points} points along the route`;
+    } catch (e) {
+      this.error = `Wind: ${e}`;
     } finally {
       this.busy = null;
     }
@@ -266,23 +298,31 @@ class AppState {
     return r.legs.map((_, k) => candidatesForLeg(r.vors, r.waypoints[k], r.waypoints[k + 1]));
   });
 
-  /** The VOR set up for leg k: the pilot's choice, else the best trackable suggestion. */
-  legNav(k: number): { c: LegRadial; chosen: boolean } | null {
+  /**
+   * The VOR set up on NAV1 or NAV2 for leg k: the pilot's choice, else a suggestion.
+   * NAV1 suggests the best trackable station; NAV2 the in-range station nearest the
+   * waypoint that is not on NAV1 (its radial over the waypoint is the arrival check).
+   */
+  legNav(k: number, slot: 1 | 2 = 1): { c: LegRadial; chosen: boolean } | null {
     const r = this.doc.resolved;
     if (!r?.vors?.length) return null;
-    const choice = this.doc.legVor[k];
+    const choice = (slot === 1 ? this.doc.legVor : this.doc.legVor2)[k];
     if (choice === "") return null;
     if (choice) {
       const vor = r.vors.find((v) => v.ident === choice);
       return vor ? { c: analyseLeg(vor, r.waypoints[k], r.waypoints[k + 1]), chosen: true } : null;
     }
-    const best = this.legCandidates[k]?.[0];
-    return best?.trackable ? { c: best, chosen: false } : null;
+    const cands = this.legCandidates[k] ?? [];
+    if (slot === 1) return cands[0]?.trackable ? { c: cands[0], chosen: false } : null;
+    const nav1 = this.legNav(k, 1)?.c.vor.ident;
+    const second = cands.filter((c) => c.vor.ident !== nav1).sort((a, b) => a.dEnd - b.dEnd)[0];
+    return second ? { c: second, chosen: false } : null;
   }
 
-  setLegVor(k: number, ident: string | null) {
-    while (this.doc.legVor.length <= k) this.doc.legVor.push(null);
-    this.doc.legVor[k] = ident;
+  setLegVor(k: number, ident: string | null, slot: 1 | 2 = 1) {
+    const list = slot === 1 ? this.doc.legVor : this.doc.legVor2;
+    while (list.length <= k) list.push(null);
+    list[k] = ident;
   }
 
   // --- Landmarks ----------------------------------------------------------------
@@ -324,8 +364,13 @@ class AppState {
     const r = this.doc.resolved;
     if (!r) return [];
     return r.waypoints.map((_, i) => {
-      const nav = i > 0 ? this.legNav(i - 1) : null;
-      const lines = [nav ? `VOR ${navLine(nav.c)}` : "", this.doc.notes[i] ?? ""].filter((t) => t.trim());
+      const nav1 = i > 0 ? this.legNav(i - 1, 1) : null;
+      const nav2 = i > 0 ? this.legNav(i - 1, 2) : null;
+      const lines = [
+        nav1 ? `NAV1 ${navLine(nav1.c)}` : "",
+        nav2 ? `NAV2 ${navLine(nav2.c)}` : "",
+        this.doc.notes[i] ?? "",
+      ].filter((t) => t.trim());
       if (i > 0) for (const lm of this.landmarksForLeg(i - 1)) lines.push(`• ${landmarkLine(lm, r)}`);
       return lines.join("\n");
     });
@@ -491,7 +536,6 @@ class AppState {
       chart_icaos: this.chartIcaos(), // cached pages are copied next to the plan by the bridge
       waypoints: wps.map((w, i) => ({ ident: w.ident, lat: w.lat, lon: w.lon, notes: this.doc.notes[i] ?? "", fixes: w.fixes })),
       legs: r.legs.map((l, k) => {
-        const nav = this.legNav(k);
         return {
           from: l.from,
           to: l.to,
@@ -501,25 +545,8 @@ class AppState {
           gs: l.gs_kt,
           dist: l.distance_nm,
           ete_min: l.ete_min,
-          nav: nav
-            ? {
-                ident: nav.c.vor.ident,
-                freq: nav.c.vor.freq,
-                freq_10khz: Math.round(parseFloat(nav.c.vor.freq) * 100),
-                obs: nav.c.obs,
-                flag: nav.c.flag,
-                trackable: nav.c.trackable,
-                radial_label: nav.c.radialLabel,
-                max_dev: nav.c.maxDev,
-                r_start: nav.c.rStart,
-                r_end: nav.c.rEnd,
-                lat: nav.c.vor.lat,
-                lon: nav.c.vor.lon,
-                var: nav.c.vor.var,
-                dme: nav.c.vor.dme,
-                suggested: !nav.chosen,
-              }
-            : null,
+          nav: this.kneeboardNav(k, 1),
+          nav2: this.kneeboardNav(k, 2),
           checkpoints: this.landmarksForLeg(k).map((lm) => ({ label: landmarkLine(lm, r), min: (lm.along / l.gs_kt) * 60 })),
         };
       }),
@@ -534,6 +561,32 @@ class AppState {
         metar: live?.metar ?? null,
         as_of: live?.fetched_at ?? null,
       },
+    };
+  }
+
+  private kneeboardNav(k: number, slot: 1 | 2): Record<string, unknown> | null {
+    const nav = this.legNav(k, slot);
+    if (!nav) return null;
+    const c = nav.c;
+    const { crs, flag } = navCourse(c);
+    return {
+      ident: c.vor.ident,
+      freq: c.vor.freq,
+      freq_10khz: Math.round(parseFloat(c.vor.freq) * 100),
+      crs, // what the OBS is set to (tuning sets it too)
+      crs_flag: flag,
+      obs: c.obs,
+      flag: c.flag,
+      trackable: c.trackable,
+      radial_label: c.radialLabel,
+      max_dev: c.maxDev,
+      r_start: c.rStart,
+      r_end: c.rEnd,
+      lat: c.vor.lat,
+      lon: c.vor.lon,
+      var: c.vor.var,
+      dme: c.vor.dme,
+      suggested: !nav.chosen,
     };
   }
 

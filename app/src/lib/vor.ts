@@ -123,3 +123,17 @@ export function navLine(c: LegRadial): string {
   if (c.trackable) return `${base} (${c.radialLabel}) · needle ≤ ${Math.max(1, Math.round(c.maxDev))}°`;
   return `${c.vor.ident} ${c.vor.freq} · ${formatRadial(c.rStart)} → ${formatRadial(c.rEnd)} (progress check)`;
 }
+
+/**
+ * The course to set on the OBS for a leg: the leg course on a trackable station;
+ * otherwise the radial over the waypoint (FROM), so the needle centres on arrival.
+ */
+export function navCourse(c: LegRadial): { crs: number; flag: Flag } {
+  return c.trackable ? { crs: c.obs, flag: c.flag } : { crs: c.rEnd, flag: "FROM" };
+}
+
+/** The NAV detail under the course: how the radial is used on this leg. */
+export function navUse(c: LegRadial): string {
+  if (c.trackable) return `${c.radialLabel} · needle ≤ ${Math.max(1, Math.round(c.maxDev))}°`;
+  return `centres over the waypoint · ${formatRadial(c.rStart)} → ${formatRadial(c.rEnd)}`;
+}

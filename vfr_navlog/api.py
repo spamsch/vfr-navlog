@@ -241,8 +241,16 @@ def cmd_kneeboard(req: dict) -> dict:
     return send(req["plan"], root)
 
 
+def cmd_wind(req: dict) -> dict:
+    """Current forecast wind at the cruise altitude, averaged along the route."""
+    from .winds import fetch_route_wind
+
+    points = [(float(lat), float(lon)) for lat, lon in req["points"]]
+    return fetch_route_wind(points, float(req["alt_ft"]))
+
+
 COMMANDS = {"aircraft": cmd_aircraft, "resolve": cmd_resolve, "pdf": cmd_pdf, "field": cmd_field,
-            "kneeboard": cmd_kneeboard, "charts": cmd_charts}
+            "kneeboard": cmd_kneeboard, "charts": cmd_charts, "wind": cmd_wind}
 
 
 def handle(req: dict) -> dict:

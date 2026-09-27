@@ -1,9 +1,10 @@
 -- VFR Navlog kneeboard for X-Plane 12 (FlyWithLua NG+).
 --
 -- Shows the plan sent from the VFR Navlog app ("Send to X-Plane") in a floating
--- window: current leg, leg timer on sim time (pauses with the sim), times over
--- waypoints with revised ETAs, checkpoints, notes, altitude changes, the VOR
--- set-up per leg with one-click NAV1/NAV2 tuning, and destination frequencies/ILS.
+-- window: MH / altitude / GS of the current leg, its NAV1 and NAV2 set-up and
+-- the next leg's (one-click tuning), notes, then the leg timer on sim time
+-- (pauses with the sim), checkpoints, altitude changes and destination
+-- frequencies/ILS.
 --
 -- Toggle: bind "FlyWithLua/vfr_kneeboard/toggle" to a key or joystick button
 -- (Settings > Keyboard / Joystick), or use Plugins > FlyWithLua > Macros.
@@ -13,7 +14,7 @@
 
 local PLAN_FILE = SYSTEM_DIRECTORY .. "Output/vfr-navlog/kneeboard_plan.lua"
 local LOG_FILE = SYSTEM_DIRECTORY .. "Output/vfr-navlog/kneeboard_log.lua"
-local WND_W, WND_H = 470, 640
+local WND_W, WND_H = 500, 780
 
 local kb = {
     wnd = nil,
@@ -42,6 +43,7 @@ local COL_RED = 0xFF8080FF
 local COL_YELLOW = 0xFF60E0FF
 local COL_CYAN = 0xFFFFE080
 local COL_DIM = 0xFFB0B0B0
+local COL_WHITE = 0xFFFFFFFF
 
 local function text_col(col, s)
     -- tostring first: an error between Push and Pop would leave the colour
@@ -210,50 +212,95 @@ end
 
 local function tune(nav, idx)
     if not nav then return end
+    local crs = nav.crs or nav.obs
     if idx == 1 then
         vfrkb_nav1_hz = nav.freq_10khz
-        vfrkb_nav1_obs = nav.obs
+        vfrkb_nav1_obs = crs
     else
         vfrkb_nav2_hz = nav.freq_10khz
-        vfrkb_nav2_obs = nav.obs
+        vfrkb_nav2_obs = crs
     end
 end
 
 -- ---------------------------------------------------------------------------
 -- Drawing
 
-local function draw_nav(nav, leg, elapsed)
-    if not nav then return end
-    imgui.Separator()
-    if nav.trackable then
-        text_col(COL_GREEN, string.format("NAV  %s %s   OBS %s %s", nav.ident, nav.freq, pad3(nav.obs), nav.flag))
-        text_col(COL_DIM, string.format("     %s, needle within %d deg%s", nav.radial_label, math.max(1, math.floor(nav.max_dev + 0.5)),
-            nav.suggested and "  (suggested)" or ""))
-    else
-        text_col(COL_CYAN, string.format("NAV  %s %s   R%s -> R%s", nav.ident, nav.freq, pad3(nav.r_start), pad3(nav.r_end)))
-        text_col(COL_DIM, "     not along a radial: progress check" .. (nav.suggested and "  (suggested)" or ""))
+-- Where the clock says we are on the leg: the radial (and DME) to expect now.
+local function expect_now(nav, leg, elapsed)
+    local a = kb.plan.waypoints[leg.from_idx]
+    local b = kb.plan.waypoints[leg.from_idx + 1]
+    local frac = math.min(1, (leg.gs * elapsed / 3600) / math.max(leg.dist, 0.1))
+    local lat = a.lat + (b.lat - a.lat) * frac
+    local lon = a.lon + (b.lon - a.lon) * frac
+    local radial = (gc_bearing(nav.lat, nav.lon, lat, lon) - nav.var + 360) % 360
+    local s = "now R" .. pad3(radial)
+    if nav.dme then s = s .. string.format("  DME %.1f", dist_nm(nav.lat, nav.lon, lat, lon)) end
+    return s
+end
+
+-- Column layout. Positions are pixels from the window's left edge; with the
+-- default 7 px font, 3x type is ~21 px per character.
+local COL_X = { 0, 170, 340 }
+local TUNE_X = 395
+
+-- Small labels over big values, column-aligned: MH / ALT / GS.
+local function value_row(labels, values, scale, colors)
+    for i, l in ipairs(labels) do
+        if i > 1 then imgui.SameLine(COL_X[i]) end
+        text_col(COL_DIM, l)
     end
-    if elapsed then
-        -- Where the clock says we are: the radial and DME to expect now.
-        local a = kb.plan.waypoints[leg.from_idx]
-        local b = kb.plan.waypoints[leg.from_idx + 1]
-        local frac = math.min(1, (leg.gs * elapsed / 3600) / math.max(leg.dist, 0.1))
-        local lat = a.lat + (b.lat - a.lat) * frac
-        local lon = a.lon + (b.lon - a.lon) * frac
-        local radial = (gc_bearing(nav.lat, nav.lon, lat, lon) - nav.var + 360) % 360
-        local line = "     expect now R" .. pad3(radial)
-        if nav.dme then line = line .. string.format("  DME %.1f", dist_nm(nav.lat, nav.lon, lat, lon)) end
-        imgui.TextUnformatted(line)
+    scaled(scale, function()
+        for i, v in ipairs(values) do
+            if i > 1 then imgui.SameLine(COL_X[i]) end
+            text_col(colors and colors[i] or COL_WHITE, v)
+        end
+    end)
+end
+
+local function short_use(nav)
+    if nav.trackable then return nav.radial_label end
+    return "centres over the waypoint"
+end
+
+-- One radio: "NAV1 172 TO" in big type with the Tune button, the station and
+-- frequency below, and (current leg only) what the needle and DME read now.
+-- suffix keeps the next leg's button labels distinct ("##next").
+local function draw_nav(idx, nav, leg, elapsed, scale, suffix)
+    if not nav then
+        scaled(scale * 0.6, function() text_col(COL_DIM, string.format("NAV%d  -", idx)) end)
+        return
     end
-    if imgui.Button("Tune NAV1", 110, 24) then tune(nav, 1) end
-    imgui.SameLine()
-    if imgui.Button("Tune NAV2", 110, 24) then tune(nav, 2) end
-    if vfrkb_nav1_hz == nav.freq_10khz then
+    local col = nav.trackable and COL_GREEN or COL_CYAN
+    scaled(scale, function()
+        text_col(COL_DIM, "NAV" .. idx)
         imgui.SameLine()
-        local flag = ({ [0] = "OFF", [1] = "TO", [2] = "FROM" })[vfrkb_nav1_flag] or "?"
-        local dme = (vfrkb_nav1_dme and vfrkb_nav1_dme > 0) and string.format("  DME %.1f", vfrkb_nav1_dme) or ""
-        text_col(COL_DIM, "  NAV1: " .. flag .. dme)
+        text_col(col, pad3(nav.crs or nav.obs))
+        imgui.SameLine()
+        text_col(col, nav.crs_flag or nav.flag)
+    end)
+    imgui.SameLine(TUNE_X)
+    if imgui.Button("Tune NAV" .. idx .. (suffix or ""), 85, 26) then tune(nav, idx) end
+    scaled(math.max(1.25, scale * 0.55), function()
+        imgui.TextUnformatted(string.format("     %s %s", nav.ident, nav.freq))
+    end)
+    -- Detail in small type (max ~68 characters at the window width).
+    local line = "       " .. short_use(nav) .. (nav.suggested and " (auto)" or "")
+    if elapsed then
+        line = line .. "  |  expect " .. expect_now(nav, leg, elapsed)
+        if idx == 1 and vfrkb_nav1_hz == nav.freq_10khz then
+            local f = ({ [0] = "OFF", [1] = "TO", [2] = "FROM" })[vfrkb_nav1_flag] or "?"
+            local dme = (vfrkb_nav1_dme and vfrkb_nav1_dme > 0) and string.format(" DME %.1f", vfrkb_nav1_dme) or ""
+            text_col(COL_DIM, line)
+            line = "       NAV1 reads " .. f .. dme
+        end
     end
+    text_col(COL_DIM, line)
+end
+
+local function section_gap()
+    imgui.Spacing()
+    imgui.Separator()
+    imgui.Spacing()
 end
 
 local function draw_destination()
@@ -280,17 +327,88 @@ local function draw_destination()
     end
 end
 
-local function draw_eta_table(k, factor)
-    imgui.Separator()
-    local t0 = kb.ato[k]
-    local zulu0 = vfrkb_zulu - (vfrkb_flight_time - t0) -- zulu at the last time over
-    local planned, revised = 0, 0
-    for j = k, #kb.plan.legs do
-        planned = planned + kb.plan.legs[j].ete_min * 60
-        revised = revised + kb.plan.legs[j].ete_min * 60 * factor
-        local wp = kb.plan.waypoints[j + 1]
-        local line = string.format("  %-16s ETA %s   rev %s", wp.ident:sub(1, 16), zulu(zulu0 + planned), zulu(zulu0 + revised))
-        if j == k then text_col(COL_YELLOW, line) else imgui.TextUnformatted(line) end
+-- Top to bottom, most important first: MH / ALT / GS, this leg's NAV1 and
+-- NAV2, notes, the next leg (MH / ALT and its NAV1 and NAV2), then the rest.
+local function draw_leg(k, n)
+    local p = kb.plan
+    local li = math.max(k, 1)
+    local leg = p.legs[li]
+    local next_leg = p.legs[li + 1]
+    local elapsed = k >= 1 and (vfrkb_flight_time - kb.ato[k]) or nil
+    local wp = p.waypoints[li + 1]
+
+    -- 1: what to fly
+    text_col(COL_DIM, string.format("%s -> %s   leg %d/%d   %s", leg.from, leg.to, li, n - 1, zulu(vfrkb_zulu)))
+    value_row({ "MH", "ALT", "GS" }, { pad3(leg.mh), tostring(leg.alt), tostring(leg.gs) }, 3.2)
+
+    -- 2: radios for this leg
+    section_gap()
+    draw_nav(1, leg.nav, leg, elapsed, 2.6)
+    imgui.Spacing()
+    draw_nav(2, leg.nav2, leg, elapsed, 2.6)
+
+    -- 3: notes for the waypoint ahead
+    if wp.notes and wp.notes ~= "" then
+        section_gap()
+        text_col(COL_DIM, "NOTES  " .. wp.ident)
+        scaled(1.4, function()
+            for _, l in ipairs(wrap(wp.notes, 34)) do imgui.TextUnformatted(l) end
+        end)
+    end
+
+    -- 4: the next leg, to set up before the turn
+    if next_leg then
+        section_gap()
+        text_col(COL_YELLOW, string.format("NEXT  %s -> %s", next_leg.from, next_leg.to))
+        local alt_col = next_leg.alt ~= leg.alt and COL_YELLOW or COL_WHITE
+        value_row({ "MH", "ALT", "GS" }, { pad3(next_leg.mh), tostring(next_leg.alt), tostring(next_leg.gs) }, 2.4,
+            { COL_WHITE, alt_col, COL_WHITE })
+        imgui.Spacing()
+        draw_nav(1, next_leg.nav, next_leg, nil, 1.9, "##next")
+        draw_nav(2, next_leg.nav2, next_leg, nil, 1.9, "##next")
+    end
+
+    -- 5: everything else
+    section_gap()
+    if k == 0 then
+        scaled(1.3, function()
+            imgui.TextUnformatted(string.format("Ready  %s -> %s", leg.from, leg.to))
+        end)
+        text_col(COL_DIM, string.format("DIST %.1f NM   ETE %s", leg.dist, mmss(leg.ete_min * 60)))
+        if imgui.Button("Start: over " .. leg.from .. " now", 300, 34) then mark_over() end
+    else
+        local remaining = leg.ete_min * 60 - elapsed
+        scaled(1.6, function()
+            text_col(remaining < 0 and COL_RED or COL_YELLOW,
+                string.format("%s %s   ETO %s", remaining < 0 and "overdue" or ("to " .. leg.to), mmss(remaining),
+                    zulu(vfrkb_zulu + remaining)))
+        end)
+        text_col(COL_DIM, string.format("%s -> %s   (leg %d/%d)   DIST %.1f NM   ETE %s", leg.from, leg.to, k, n - 1,
+            leg.dist, mmss(leg.ete_min * 60)))
+        if imgui.Button("Over " .. leg.to .. " now", 260, 34) then mark_over() end
+        imgui.SameLine()
+        if imgui.Button("Undo", 70, 34) then undo_over() end
+    end
+
+    if next_leg and next_leg.alt ~= leg.alt then
+        scaled(1.3, function()
+            text_col(COL_YELLOW, string.format("At %s: %s to %d ft", leg.to, next_leg.alt > leg.alt and "climb" or "descend", next_leg.alt))
+        end)
+    end
+
+    if elapsed and leg.checkpoints and #leg.checkpoints > 0 then
+        imgui.Spacing()
+        for _, cp in ipairs(leg.checkpoints) do
+            local dt = cp.min * 60 - elapsed
+            local col = dt < -30 and COL_DIM or (dt < 60 and COL_YELLOW or COL_WHITE)
+            text_col(col, string.format("  %s   %s", cp.label, dt >= 0 and ("in " .. mmss(dt)) or "passed"))
+        end
+    end
+
+    if wp.fixes and #wp.fixes > 0 then
+        imgui.Spacing()
+        text_col(COL_DIM, "VOR fixes " .. wp.ident)
+        for _, fx in ipairs(wp.fixes) do text_col(COL_DIM, "  " .. fx) end
     end
 end
 
@@ -298,83 +416,19 @@ local function draw_plan()
     local p = kb.plan
     local n = #p.waypoints
     local k = active_leg()
-    text_col(COL_DIM, p.title .. "   " .. zulu(vfrkb_zulu))
 
     local near = k >= 1 and (k >= n - 1 or (p.call_leg and k >= p.call_leg))
     if near ~= kb.near_prev then kb.dest_open = nil; kb.near_prev = near end
     local dest_open = kb.dest_open
     if dest_open == nil then dest_open = near end
 
-    if k == 0 then
-        local leg = p.legs[1]
-        scaled(1.5, function()
-            imgui.TextUnformatted(string.format("Ready  %s -> %s", leg.from, leg.to))
-            imgui.TextUnformatted(string.format("MH %s   ALT %d", pad3(leg.mh), leg.alt))
-        end)
-        if imgui.Button("Start: over " .. leg.from .. " now", 300, 34) then mark_over() end
-        draw_nav(leg.nav, leg, nil)
-    elseif k >= n then
+    text_col(COL_DIM, p.title)
+    if k >= n then
         scaled(1.5, function() imgui.TextUnformatted("Arrived " .. p.waypoints[n].ident) end)
         imgui.TextUnformatted("Block time " .. mmss(kb.ato[n] - kb.ato[1]))
         dest_open = true
     else
-        local leg = p.legs[k]
-        local elapsed = vfrkb_flight_time - kb.ato[k]
-        local remaining = leg.ete_min * 60 - elapsed
-        scaled(1.3, function()
-            imgui.TextUnformatted(string.format("%s -> %s   (leg %d/%d)", leg.from, leg.to, k, n - 1))
-        end)
-        scaled(2.0, function()
-            imgui.TextUnformatted(string.format("MH %s   %d ft", pad3(leg.mh), leg.alt))
-        end)
-        imgui.TextUnformatted(string.format("GS %d kt   DIST %.1f NM   ETE %s", leg.gs, leg.dist, mmss(leg.ete_min * 60)))
-        scaled(1.8, function()
-            text_col(remaining < 0 and COL_RED or COL_YELLOW,
-                string.format("%s %s   ETO %s", remaining < 0 and "overdue" or ("to " .. leg.to), mmss(remaining),
-                    zulu(vfrkb_zulu + remaining)))
-        end)
-
-        local next_leg = p.legs[k + 1]
-        if next_leg and next_leg.alt ~= leg.alt then
-            text_col(COL_YELLOW, string.format("At %s: %s to %d ft", leg.to, next_leg.alt > leg.alt and "climb" or "descend", next_leg.alt))
-        end
-
-        if imgui.Button("Over " .. leg.to .. " now", 260, 34) then mark_over() end
-        imgui.SameLine()
-        if imgui.Button("Undo", 70, 34) then undo_over() end
-
-        draw_nav(leg.nav, leg, elapsed)
-        if next_leg and next_leg.nav then
-            local nn = next_leg.nav
-            text_col(COL_DIM, string.format("Next leg: %s %s %s", nn.ident, nn.freq,
-                nn.trackable and ("OBS " .. pad3(nn.obs) .. " " .. nn.flag) or ("R" .. pad3(nn.r_start) .. "->R" .. pad3(nn.r_end))))
-        end
-
-        if leg.checkpoints and #leg.checkpoints > 0 then
-            imgui.Separator()
-            for _, cp in ipairs(leg.checkpoints) do
-                local dt = cp.min * 60 - elapsed
-                local col = dt < -30 and COL_DIM or (dt < 60 and COL_YELLOW or 0xFFFFFFFF)
-                text_col(col, string.format("  %s   %s", cp.label, dt >= 0 and ("in " .. mmss(dt)) or "passed"))
-            end
-        end
-
-        local wp = p.waypoints[k + 1]
-        if (wp.notes and wp.notes ~= "") or (wp.fixes and #wp.fixes > 0) then
-            imgui.Separator()
-            text_col(COL_DIM, "Notes " .. wp.ident)
-            for _, l in ipairs(wrap(wp.notes, 62)) do imgui.TextUnformatted("  " .. l) end
-            for _, fx in ipairs(wp.fixes or {}) do text_col(COL_DIM, "  " .. fx) end
-        end
-
-        -- Revised ETAs scale the remaining legs by the last leg's actual/planned time.
-        local factor = 1
-        if k >= 2 then
-            local actual = kb.ato[k] - kb.ato[k - 1]
-            local plan_s = p.legs[k - 1].ete_min * 60
-            if plan_s > 0 then factor = actual / plan_s end
-        end
-        draw_eta_table(k, factor)
+        draw_leg(k, n)
     end
 
     imgui.Separator()
@@ -388,7 +442,7 @@ local function draw_plan()
     end
     if k >= 1 then
         imgui.SameLine()
-        if imgui.Button("Reset log", 90, 24) then reset_log() end
+        if imgui.Button("Reset flight", 100, 24) then reset_log() end
     end
     if dest_open then draw_destination() end
 end
