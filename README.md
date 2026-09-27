@@ -36,6 +36,10 @@ Destination and weather briefing:
 <img src="docs/weather.png" width="49.5%" alt="Weather briefing — METAR/TAF, parsed values, VFR assessment">
 </p>
 
+## Desktop app
+
+`app/` holds a Tauri desktop planner and in-flight kneeboard built on this package: paste a route, annotate waypoints and landmarks on the chart, see which legs can be flown on a VOR radial, edit leg altitudes, then fly it with a leg timer, dead-reckoning position, revised ETAs and live destination frequencies/ATIS/ILS. It exports this navlog with your notes. See [app/README.md](app/README.md).
+
 ## Install
 
 Python 3.11+. The code lives in the `vfr_navlog` package; install it (editable is convenient for a personal checkout):
